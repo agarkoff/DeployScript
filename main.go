@@ -158,8 +158,13 @@ func readConfig(filename string) ([]string, error) {
 }
 
 func checkGitClean(dir string) error {
-	// Check if there are any changes to tracked files
-	cmd := exec.Command("git", "diff-index", "--quiet", "HEAD", "--")
+	// First, update the index to refresh cached file stats
+	cmd := exec.Command("git", "update-index", "--refresh")
+	cmd.Dir = dir
+	cmd.Run() // Ignore errors, as it returns non-zero if there are changes
+
+	// Now check if there are any changes to tracked files
+	cmd = exec.Command("git", "diff-index", "--quiet", "HEAD", "--")
 	cmd.Dir = dir
 	err := cmd.Run()
 
