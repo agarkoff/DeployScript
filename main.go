@@ -148,6 +148,13 @@ func main() {
 	tagName := fmt.Sprintf("release/%s.0", version)
 	for _, service := range services {
 		fmt.Printf("  Creating tag for service: %s\n", service)
+
+		// Delete tag if it already exists (locally and remotely)
+		if err := deleteTagIfExists(serviceDirs[service], tagName); err != nil {
+			log.Fatalf("Failed to delete existing tag in %s: %v", service, err)
+		}
+
+		// Create new tag
 		if err := gitTag(serviceDirs[service], tagName); err != nil {
 			log.Fatalf("Failed to create tag in %s: %v", service, err)
 		}
@@ -288,6 +295,20 @@ func deleteBranchIfExists(dir string, branchName string) error {
 	cmd = exec.Command("git", "push", "origin", "--delete", branchName)
 	cmd.Dir = dir
 	cmd.Run() // Ignore error, remote branch might not exist
+
+	return nil
+}
+
+func deleteTagIfExists(dir string, tagName string) error {
+	// Try to delete local tag (ignore error if it doesn't exist)
+	cmd := exec.Command("git", "tag", "-d", tagName)
+	cmd.Dir = dir
+	cmd.Run() // Ignore error, tag might not exist
+
+	// Try to delete remote tag (ignore error if it doesn't exist)
+	cmd = exec.Command("git", "push", "origin", ":refs/tags/"+tagName)
+	cmd.Dir = dir
+	cmd.Run() // Ignore error, remote tag might not exist
 
 	return nil
 }
