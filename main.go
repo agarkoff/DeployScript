@@ -98,6 +98,13 @@ func main() {
 	branchName := fmt.Sprintf("release/%s", version)
 	for _, service := range services {
 		fmt.Printf("  Creating branch for service: %s\n", service)
+
+		// Delete branch if it already exists (locally and remotely)
+		if err := deleteBranchIfExists(serviceDirs[service], branchName); err != nil {
+			log.Fatalf("Failed to delete existing branch in %s: %v", service, err)
+		}
+
+		// Create new branch
 		if err := gitCheckout(serviceDirs[service], "-b", branchName); err != nil {
 			log.Fatalf("Failed to create release branch in %s: %v", service, err)
 		}
@@ -241,12 +248,27 @@ func gitTag(dir string, tagName string) error {
 }
 
 func gitPushWithTags(dir string) error {
-	cmd := exec.Command("git", "push", "-u", "origin", "HEAD", "--tags")
+	// First, push the branch and tags with force to overwrite remote
+	cmd := exec.Command("git", "push", "-u", "origin", "HEAD", "--tags", "--force-with-lease")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, output)
 	}
+	return nil
+}
+
+func deleteBranchIfExists(dir string, branchName string) error {
+	// Try to delete local branch (ignore error if it doesn't exist)
+	cmd := exec.Command("git", "branch", "-D", branchName)
+	cmd.Dir = dir
+	cmd.Run() // Ignore error, branch might not exist
+
+	// Try to delete remote branch (ignore error if it doesn't exist)
+	cmd = exec.Command("git", "push", "origin", "--delete", branchName)
+	cmd.Dir = dir
+	cmd.Run() // Ignore error, remote branch might not exist
+
 	return nil
 }
 
