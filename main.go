@@ -118,6 +118,18 @@ func main() {
 		}
 	}
 
+	// Show all diffs before committing
+	fmt.Println("\nShowing all changes before commit:")
+	fmt.Println(strings.Repeat("=", 80))
+	for _, service := range services {
+		fmt.Printf("\n--- Changes in service: %s ---\n", service)
+		if err := showGitDiff(serviceDirs[service]); err != nil {
+			// Don't fail if diff is empty, just continue
+			fmt.Println("No changes to show")
+		}
+	}
+	fmt.Println(strings.Repeat("=", 80))
+
 	// Phase 6: Commit changes for all
 	fmt.Println("\nPhase 6: Committing changes...")
 	commitMsg := fmt.Sprintf("Up to version %s.0", version)
@@ -282,6 +294,14 @@ func deleteBranchIfExists(dir string, branchName string) error {
 
 func showGitStatus(dir string) error {
 	cmd := exec.Command("git", "status")
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func showGitDiff(dir string) error {
+	cmd := exec.Command("git", "diff")
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
