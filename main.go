@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -11,6 +12,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+)
+
+// ANSI color codes
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorCyan   = "\033[36m"
+	colorYellow = "\033[33m"
 )
 
 func main() {
@@ -324,9 +334,67 @@ func showGitStatus(dir string) error {
 func showGitDiff(dir string) error {
 	cmd := exec.Command("git", "diff")
 	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
+
+	// Capture output to process it
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	err := cmd.Run()
+	if err != nil {
+		// If there's no diff, git diff returns 0, so this is a real error
+		return err
+	}
+
+	// Process the output line by line
+	scanner := bufio.NewScanner(&stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		coloredLine := colorizeGitDiffLine(line)
+		fmt.Println(coloredLine)
+	}
+
+	return scanner.Err()
+}
+
+func colorizeGitDiffLine(line string) string {
+	if len(line) == 0 {
+		return line
+	}
+
+	switch line[0] {
+	case '-':
+		// Lines starting with --- are file headers, not deletions
+		if strings.HasPrefix(line, "---") {
+			return colorCyan + line + colorReset
+		}
+		// Deleted lines
+		return colorRed + line + colorReset
+	case '+':
+		// Lines starting with +++ are file headers, not additions
+		if strings.HasPrefix(line, "+++") {
+			return colorCyan + line + colorReset
+		}
+		// Added lines
+		return colorGreen + line + colorReset
+	case '@':
+		// Hunk headers
+		return colorCyan + line + colorReset
+	case 'd':
+		// diff headers
+		if strings.HasPrefix(line, "diff ") {
+			return colorYellow + line + colorReset
+		}
+		return line
+	case 'i':
+		// index headers
+		if strings.HasPrefix(line, "index ") {
+			return colorYellow + line + colorReset
+		}
+		return line
+	default:
+		return line
+	}
 }
 
 func cleanGitWorkingDirectory(dir string) error {
