@@ -158,15 +158,17 @@ func readConfig(filename string) ([]string, error) {
 }
 
 func checkGitClean(dir string) error {
-	cmd := exec.Command("git", "status", "--porcelain")
+	// Check if there are any changes to tracked files
+	cmd := exec.Command("git", "diff-index", "--quiet", "HEAD", "--")
 	cmd.Dir = dir
-	output, err := cmd.Output()
-	if err != nil {
-		return err
-	}
+	err := cmd.Run()
 
-	if len(output) > 0 {
-		return fmt.Errorf("working directory has uncommitted changes")
+	if err != nil {
+		// Exit code 1 means there are changes, other errors are real problems
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return fmt.Errorf("working directory has uncommitted changes")
+		}
+		return err
 	}
 
 	return nil
