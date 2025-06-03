@@ -116,17 +116,27 @@ func main() {
 		}
 	}
 
+	// Phase 7: Create tags for all
+	fmt.Println("\nPhase 7: Creating tags...")
+	tagName := fmt.Sprintf("release/%s.0", version)
+	for _, service := range services {
+		fmt.Printf("  Creating tag for service: %s\n", service)
+		if err := gitTag(serviceDirs[service], tagName); err != nil {
+			log.Fatalf("Failed to create tag in %s: %v", service, err)
+		}
+	}
+
 	// Wait for user confirmation
 	fmt.Println("\nAll changes have been prepared. Please review the changes.")
 	fmt.Println("Press Enter to continue and push changes...")
 	reader := bufio.NewReader(os.Stdin)
 	reader.ReadString('\n')
 
-	// Phase 7: Push changes for all
-	fmt.Println("\nPhase 7: Pushing changes...")
+	// Phase 8: Push changes and tags for all
+	fmt.Println("\nPhase 8: Pushing changes and tags...")
 	for _, service := range services {
 		fmt.Printf("  Pushing service: %s\n", service)
-		if err := gitPush(serviceDirs[service]); err != nil {
+		if err := gitPushWithTags(serviceDirs[service]); err != nil {
 			log.Fatalf("Failed to push in %s: %v", service, err)
 		}
 	}
@@ -220,8 +230,18 @@ func gitCommit(dir string, message string) error {
 	return nil
 }
 
-func gitPush(dir string) error {
-	cmd := exec.Command("git", "push", "-u", "origin", "HEAD")
+func gitTag(dir string, tagName string) error {
+	cmd := exec.Command("git", "tag", tagName)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, output)
+	}
+	return nil
+}
+
+func gitPushWithTags(dir string) error {
+	cmd := exec.Command("git", "push", "-u", "origin", "HEAD", "--tags")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
