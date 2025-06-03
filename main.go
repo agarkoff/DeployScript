@@ -62,7 +62,28 @@ func main() {
 	for _, service := range services {
 		fmt.Printf("  Checking service: %s\n", service)
 		if err := checkGitClean(serviceDirs[service]); err != nil {
-			log.Fatalf("Git working copy is not clean in %s: %v", service, err)
+			fmt.Printf("\nWarning: Git working copy is not clean in %s\n", service)
+
+			// Show git status
+			if err := showGitStatus(serviceDirs[service]); err != nil {
+				log.Fatalf("Failed to show git status in %s: %v", service, err)
+			}
+
+			// Ask user if they want to clean
+			fmt.Printf("\nDo you want to clean the working directory for %s? (y/n): ", service)
+			reader := bufio.NewReader(os.Stdin)
+			response, _ := reader.ReadString('\n')
+			response = strings.TrimSpace(strings.ToLower(response))
+
+			if response != "y" && response != "yes" {
+				log.Fatal("Deployment cancelled by user")
+			}
+
+			// Clean the working directory
+			fmt.Printf("  Cleaning working directory for %s...\n", service)
+			if err := cleanGitWorkingDirectory(serviceDirs[service]); err != nil {
+				log.Fatalf("Failed to clean working directory in %s: %v", service, err)
+			}
 		}
 	}
 
@@ -268,6 +289,26 @@ func deleteBranchIfExists(dir string, branchName string) error {
 	cmd = exec.Command("git", "push", "origin", "--delete", branchName)
 	cmd.Dir = dir
 	cmd.Run() // Ignore error, remote branch might not exist
+
+	return nil
+}
+
+func showGitStatus(dir string) error {
+	cmd := exec.Command("git", "status")
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func cleanGitWorkingDirectory(dir string) error {
+	// Reset all tracked files to HEAD
+	cmd := exec.Command("git", "reset", "--hard", "HEAD")
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to reset: %v: %s", err, output)
+	}
 
 	return nil
 }
