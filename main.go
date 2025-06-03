@@ -359,7 +359,10 @@ func updatePomFiles(dir string, version string) error {
 
 	// Update each pom.xml
 	for _, pomFile := range pomFiles {
-		if err := updatePomFile(pomFile, version); err != nil {
+		// Check if this is a root pom (in the service's top directory)
+		isRootPom := filepath.Dir(pomFile) == dir
+
+		if err := updatePomFile(pomFile, version, isRootPom); err != nil {
 			return fmt.Errorf("failed to update %s: %v", pomFile, err)
 		}
 	}
@@ -367,7 +370,7 @@ func updatePomFiles(dir string, version string) error {
 	return nil
 }
 
-func updatePomFile(filename string, version string) error {
+func updatePomFile(filename string, version string, isRootPom bool) error {
 	// Read file
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -377,46 +380,63 @@ func updatePomFile(filename string, version string) error {
 	content := string(data)
 	newVersion := version + ".0"
 
-	// Update project version tag (main project version, not inside parent)
-	// First, let's handle the main project version more simply
-	// Look for <version> that comes before <parent> or directly after <project>
+	// Update versions line by line with context tracking
 	lines := strings.Split(content, "\n")
 	insideParent := false
 	insideProperties := false
-	versionUpdated := false
+	insideProject := false
+	projectTagFound := false
+	rootVersionUpdated := false
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Track if we're inside parent tag
+		// Track when we find the project tag
+		if strings.Contains(trimmed, "<project") && !projectTagFound {
+			insideProject = true
+			projectTagFound = true
+		}
+
+		// Track context - where we are in the XML
 		if strings.Contains(trimmed, "<parent>") {
 			insideParent = true
+			insideProject = false // We're no longer directly in project
 		} else if strings.Contains(trimmed, "</parent>") {
 			insideParent = false
 		}
 
-		// Track if we're inside properties tag
 		if strings.Contains(trimmed, "<properties>") {
 			insideProperties = true
+			insideProject = false // We're no longer directly in project
 		} else if strings.Contains(trimmed, "</properties>") {
 			insideProperties = false
 		}
 
-		// Update version tag based on context
-		if strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
-			if insideParent {
-				// Update version inside parent tag
-				versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
-				lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
-			} else if !versionUpdated {
-				// Update main project version (first version tag outside parent)
-				versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
-				lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
-				versionUpdated = true
-			}
+		// Also exit direct project context on other major tags
+		if strings.Contains(trimmed, "<dependencies>") ||
+			strings.Contains(trimmed, "<build>") ||
+			strings.Contains(trimmed, "<modules>") ||
+			strings.Contains(trimmed, "<profiles>") {
+			insideProject = false
 		}
 
-		// Update properties containing "proezd" in their name (only inside properties section)
+		// CASE 1: Update root pom.xml version (only in root pom, direct child of project)
+		if isRootPom && insideProject && !rootVersionUpdated &&
+			strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
+			versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
+			lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
+			rootVersionUpdated = true
+			insideProject = false // Version found, no longer in direct project context
+		}
+
+		// CASE 2: Update version inside parent tag (only in submodules)
+		if !isRootPom && insideParent &&
+			strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
+			versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
+			lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
+		}
+
+		// CASE 3: Update properties containing "proezd" in their name (only inside properties section)
 		if insideProperties && strings.Contains(line, "proezd") {
 			// Check if this line contains a property with proezd in its name
 			proezdRegex := regexp.MustCompile(`(<([^>]*proezd[^>]*)>)([^<]+)(</)`)
