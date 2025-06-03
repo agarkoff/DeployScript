@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/xml"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -10,21 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
-
-// POM represents Maven pom.xml structure
-type POM struct {
-	XMLName    xml.Name    `xml:"project"`
-	Version    string      `xml:"version"`
-	Properties *Properties `xml:"properties,omitempty"`
-	Modules    []string    `xml:"modules>module,omitempty"`
-}
-
-// Properties represents Maven properties
-type Properties struct {
-	Inner []byte `xml:",innerxml"`
-}
 
 func main() {
 	// Parse command line arguments
@@ -346,32 +333,62 @@ func updatePomFile(filename string, version string) error {
 		return err
 	}
 
-	// Parse XML
-	var pom POM
-	if err := xml.Unmarshal(data, &pom); err != nil {
-		return err
+	content := string(data)
+	newVersion := version + ".0"
+
+	// Update project version tag (main project version, not inside parent)
+	// First, let's handle the main project version more simply
+	// Look for <version> that comes before <parent> or directly after <project>
+	lines := strings.Split(content, "\n")
+	insideParent := false
+	insideProperties := false
+	versionUpdated := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Track if we're inside parent tag
+		if strings.Contains(trimmed, "<parent>") {
+			insideParent = true
+		} else if strings.Contains(trimmed, "</parent>") {
+			insideParent = false
+		}
+
+		// Track if we're inside properties tag
+		if strings.Contains(trimmed, "<properties>") {
+			insideProperties = true
+		} else if strings.Contains(trimmed, "</properties>") {
+			insideProperties = false
+		}
+
+		// Update version tag based on context
+		if strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
+			if insideParent {
+				// Update version inside parent tag
+				versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
+				lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
+			} else if !versionUpdated {
+				// Update main project version (first version tag outside parent)
+				versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
+				lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
+				versionUpdated = true
+			}
+		}
+
+		// Update properties containing "proezd" in their name (only inside properties section)
+		if insideProperties && strings.Contains(line, "proezd") {
+			// Check if this line contains a property with proezd in its name
+			proezdRegex := regexp.MustCompile(`(<([^>]*proezd[^>]*)>)([^<]+)(</)`)
+			if proezdRegex.MatchString(line) {
+				lines[i] = proezdRegex.ReplaceAllString(line, "${1}"+newVersion+"${4}")
+			}
+		}
 	}
 
-	// Update version
-	pom.Version = version + ".0"
+	content = strings.Join(lines, "\n")
 
-	// Update properties containing "proezd"
-	if pom.Properties != nil {
-		updatedProps := updateProezdProperties(string(pom.Properties.Inner), version)
-		pom.Properties.Inner = []byte(updatedProps)
-	}
-
-	// Marshal back to XML
-	output, err := xml.MarshalIndent(pom, "", "    ")
-	if err != nil {
-		return err
-	}
-
-	// Add XML declaration
-	finalOutput := []byte(xml.Header + string(output))
-
-	// Write file
-	return ioutil.WriteFile(filename, finalOutput, 0644)
+	// Write file back
+	return ioutil.WriteFile(filename, []byte(content), 0644)
 }
 
 func updateProezdProperties(props string, version string) string {
