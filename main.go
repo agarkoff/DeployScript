@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -169,14 +171,34 @@ func main() {
 		}
 	}
 
+	// Phase 8: Clean Maven cache and build all services
+	fmt.Println("\nPhase 8: Cleaning Maven cache and building services...")
+
+	// Clean Maven cache
+	if err := cleanMavenCache(); err != nil {
+		log.Fatalf("Failed to clean Maven cache: %v", err)
+	}
+
+	// Build all services in order
+	for _, service := range services {
+		fmt.Printf("\nBuilding service: %s\n", service)
+		fmt.Println(strings.Repeat("-", 60))
+
+		if err := buildService(serviceDirs[service]); err != nil {
+			log.Fatalf("Build failed for service %s: %v", service, err)
+		}
+
+		fmt.Printf("%sService %s built successfully!%s\n", colorGreen, service, colorReset)
+	}
+
 	// Wait for user confirmation
-	fmt.Println("\nAll changes have been prepared. Please review the changes.")
+	fmt.Println("\nAll services built successfully!")
 	fmt.Println("Press Enter to continue and push changes...")
 	reader := bufio.NewReader(os.Stdin)
 	reader.ReadString('\n')
 
-	// Phase 8: Push changes and tags for all
-	fmt.Println("\nPhase 8: Pushing changes and tags...")
+	// Phase 9: Push changes and tags for all
+	fmt.Println("\nPhase 9: Pushing changes and tags...")
 	for _, service := range services {
 		fmt.Printf("  Pushing service: %s\n", service)
 		if err := gitPushWithTags(serviceDirs[service]); err != nil {
@@ -185,6 +207,89 @@ func main() {
 	}
 
 	fmt.Println("\nDeployment script completed successfully!")
+}
+
+func cleanMavenCache() error {
+	// Get Maven local repository path
+	mavenRepo := getMavenLocalRepository()
+
+	// Construct path to ru\gov\pfr\ecp\apso\proezd\
+	targetPath := filepath.Join(mavenRepo, "ru", "gov", "pfr", "ecp", "apso", "proezd")
+
+	fmt.Printf("Cleaning Maven cache: %s\n", targetPath)
+
+	// Check if directory exists
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		fmt.Println("Maven cache directory does not exist, skipping cleanup")
+		return nil
+	}
+
+	// Remove the directory
+	if err := os.RemoveAll(targetPath); err != nil {
+		return fmt.Errorf("failed to remove Maven cache directory: %v", err)
+	}
+
+	fmt.Println("Maven cache cleaned successfully")
+	return nil
+}
+
+func getMavenLocalRepository() string {
+	// First, try to get from M2_REPO environment variable
+	if m2Repo := os.Getenv("M2_REPO"); m2Repo != "" {
+		return m2Repo
+	}
+
+	// Then, try to get from MAVEN_OPTS or standard location
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("Warning: Could not get user home directory: %v", err)
+		homeDir = ""
+	}
+
+	// Default Maven repository location
+	if homeDir != "" {
+		return filepath.Join(homeDir, ".m2", "repository")
+	}
+
+	// Fallback for Windows
+	if runtime.GOOS == "windows" {
+		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
+			return filepath.Join(userProfile, ".m2", "repository")
+		}
+	}
+
+	log.Fatal("Could not determine Maven local repository path")
+	return ""
+}
+
+func buildService(serviceDir string) error {
+	// Create Maven command
+	cmd := exec.Command("mvn", "clean", "install")
+	cmd.Dir = serviceDir
+
+	// Capture output
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Also print output in real-time
+	cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
+	cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+	// Run the build
+	err := cmd.Run()
+
+	if err != nil {
+		// Print error details
+		fmt.Printf("\n%sBuild failed!%s\n", colorRed, colorReset)
+		if stderr.Len() > 0 {
+			fmt.Printf("Error output:\n%s\n", stderr.String())
+		}
+		return fmt.Errorf("mvn clean install failed: %v", err)
+	}
+
+	return nil
 }
 
 func readConfig(filename string) ([]string, error) {
