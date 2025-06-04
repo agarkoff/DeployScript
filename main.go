@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -448,101 +447,121 @@ func updatePomFile(filename string, version string, isRootPom bool) error {
 	content := string(data)
 	newVersion := version + ".0"
 
-	// Update versions line by line with context tracking
+	// Parse line by line
 	lines := strings.Split(content, "\n")
+
+	// Flags for tracking context
+	insideProject := false
 	insideParent := false
 	insideProperties := false
-	insideProject := false
-	projectTagFound := false
+
+	// Counters for tracking what we've updated
 	rootVersionUpdated := false
+	parentVersionUpdated := false
+
+	// Counter for tags after project
+	tagsAfterProject := 0
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Track when we find the project tag
-		if strings.Contains(trimmed, "<project") && !projectTagFound {
+		// Track entering/exiting project
+		if strings.Contains(line, "<project") {
 			insideProject = true
-			projectTagFound = true
+			tagsAfterProject = 0
 		}
 
-		// Track context - where we are in the XML
-		if strings.Contains(trimmed, "<parent>") {
+		// Track entering/exiting parent
+		if strings.Contains(line, "<parent>") {
 			insideParent = true
-			insideProject = false // We're no longer directly in project
-		} else if strings.Contains(trimmed, "</parent>") {
+		} else if strings.Contains(line, "</parent>") {
 			insideParent = false
 		}
 
-		if strings.Contains(trimmed, "<properties>") {
+		// Track entering/exiting properties
+		if strings.Contains(line, "<properties>") {
 			insideProperties = true
-			insideProject = false // We're no longer directly in project
-		} else if strings.Contains(trimmed, "</properties>") {
+		} else if strings.Contains(line, "</properties>") {
 			insideProperties = false
 		}
 
-		// Also exit direct project context on other major tags
-		if strings.Contains(trimmed, "<dependencies>") ||
-			strings.Contains(trimmed, "<build>") ||
-			strings.Contains(trimmed, "<modules>") ||
-			strings.Contains(trimmed, "<profiles>") {
-			insideProject = false
+		// Count tags after project (to determine if version is direct child)
+		if insideProject && !insideParent && !insideProperties {
+			if strings.Contains(trimmed, "<") && !strings.Contains(trimmed, "</") &&
+				!strings.Contains(trimmed, "<version>") {
+				tagsAfterProject++
+			}
 		}
 
-		// CASE 1: Update root pom.xml version (only in root pom, direct child of project)
-		if isRootPom && insideProject && !rootVersionUpdated &&
-			strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
-			versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
-			lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
-			rootVersionUpdated = true
-			insideProject = false // Version found, no longer in direct project context
+		// Update version tags
+		if strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
+
+			// Extract current version
+			start := strings.Index(trimmed, "<version>") + 9
+			end := strings.Index(trimmed, "</version>")
+
+			if start > 8 && end > start {
+				currentVersion := trimmed[start:end]
+
+				// CASE 1: Root POM - update version that's direct child of project
+				if isRootPom && insideProject && !insideParent && !insideProperties &&
+					!rootVersionUpdated && tagsAfterProject <= 4 {
+					// Replace version
+					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
+						"<version>"+newVersion+"</version>", 1)
+					lines[i] = newLine
+					rootVersionUpdated = true
+				}
+
+				// CASE 2a: Submodule POM - update version inside parent
+				if !isRootPom && insideParent && !parentVersionUpdated {
+					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
+						"<version>"+newVersion+"</version>", 1)
+					lines[i] = newLine
+					parentVersionUpdated = true
+				}
+
+				// CASE 2b: Submodule POM - update project version
+				if !isRootPom && insideProject && !insideParent && !insideProperties &&
+					!rootVersionUpdated && tagsAfterProject <= 4 {
+					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
+						"<version>"+newVersion+"</version>", 1)
+					lines[i] = newLine
+					rootVersionUpdated = true
+				}
+			}
 		}
 
-		// CASE 2: Update version inside parent tag (only in submodules)
-		if !isRootPom && insideParent &&
-			strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
-			versionRegex := regexp.MustCompile(`(<version>)([^<]+)(</version>)`)
-			lines[i] = versionRegex.ReplaceAllString(line, "${1}"+newVersion+"${3}")
-		}
+		// CASE 3: Update proezd properties
+		if insideProperties && strings.Contains(trimmed, "proezd") &&
+			strings.Contains(trimmed, "<") && strings.Contains(trimmed, ">") {
+			// Find property tag with proezd in name
+			startTag := strings.Index(trimmed, "<")
+			endTag := strings.Index(trimmed, ">")
 
-		// CASE 3: Update properties containing "proezd" in their name (only inside properties section)
-		if insideProperties && strings.Contains(line, "proezd") {
-			// Check if this line contains a property with proezd in its name
-			proezdRegex := regexp.MustCompile(`(<([^>]*proezd[^>]*)>)([^<]+)(</)`)
-			if proezdRegex.MatchString(line) {
-				lines[i] = proezdRegex.ReplaceAllString(line, "${1}"+newVersion+"${4}")
+			if startTag >= 0 && endTag > startTag {
+				tagContent := trimmed[startTag+1 : endTag]
+
+				// Check if this is a proezd property (not a closing tag)
+				if strings.Contains(tagContent, "proezd") && !strings.HasPrefix(tagContent, "/") {
+					// Find the value
+					valueStart := endTag + 1
+					valueEnd := strings.Index(trimmed[valueStart:], "<")
+
+					if valueEnd > 0 {
+						// Replace the value
+						oldValue := trimmed[valueStart : valueStart+valueEnd]
+						newLine := strings.Replace(line, ">"+oldValue+"<", ">"+newVersion+"<", 1)
+						lines[i] = newLine
+					}
+				}
 			}
 		}
 	}
 
+	// Join lines back
 	content = strings.Join(lines, "\n")
 
 	// Write file back
 	return ioutil.WriteFile(filename, []byte(content), 0644)
-}
-
-func updateProezdProperties(props string, version string) string {
-	lines := strings.Split(props, "\n")
-	var result []string
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "proezd") && strings.Contains(trimmed, "<") && strings.Contains(trimmed, ">") {
-			// Extract property name
-			start := strings.Index(trimmed, "<")
-			end := strings.Index(trimmed, ">")
-			if start != -1 && end != -1 && start < end {
-				propName := trimmed[start+1 : end]
-				if strings.Contains(propName, "proezd") {
-					// Replace version
-					closeTag := "</" + propName + ">"
-					newLine := fmt.Sprintf("        <%s>%s.0%s", propName, version, closeTag)
-					result = append(result, newLine)
-					continue
-				}
-			}
-		}
-		result = append(result, line)
-	}
-
-	return strings.Join(result, "\n")
 }
