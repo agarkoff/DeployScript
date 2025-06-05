@@ -232,7 +232,8 @@ func main() {
 		}
 	}
 
-	if err := gitlab.CreatePipelines(gitlabServices, branchName, helmNamespace); err != nil {
+	// Use tag name instead of branch name for pipelines
+	if err := gitlab.CreatePipelines(gitlabServices, tagName, helmNamespace); err != nil {
 		log.Fatalf("Failed to create GitLab pipelines: %v", err)
 	}
 

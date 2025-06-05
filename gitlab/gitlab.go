@@ -45,7 +45,7 @@ const (
 )
 
 // CreatePipelines creates GitLab pipelines according to service configuration
-func CreatePipelines(services []Service, branch string, helmNamespace string) error {
+func CreatePipelines(services []Service, ref string, helmNamespace string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
 		return fmt.Errorf("GITLAB_TOKEN environment variable is not set")
@@ -73,9 +73,9 @@ func CreatePipelines(services []Service, branch string, helmNamespace string) er
 
 	// Process sequential services first
 	for _, service := range sequentialServices {
-		fmt.Printf("\n%sStarting pipeline for sequential service: %s%s\n", colorBlue, service.Name, colorReset)
-		
-		pipelineID, err := createPipeline(service, gitlabURI, gitlabToken, branch, helmNamespace)
+		fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s%s\n", colorBlue, service.Name, ref, colorReset)
+
+		pipelineID, err := createPipeline(service, gitlabURI, gitlabToken, ref, helmNamespace)
 		if err != nil {
 			return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
 		}
@@ -88,8 +88,8 @@ func CreatePipelines(services []Service, branch string, helmNamespace string) er
 
 	// Process grouped services in parallel
 	for groupName, groupServices := range groups {
-		fmt.Printf("\n%sStarting pipelines for group: %s%s\n", colorBlue, groupName, colorReset)
-		
+		fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s%s\n", colorBlue, groupName, ref, colorReset)
+
 		var wg sync.WaitGroup
 		errors := make(chan error, len(groupServices))
 
@@ -97,8 +97,8 @@ func CreatePipelines(services []Service, branch string, helmNamespace string) er
 			wg.Add(1)
 			go func(svc Service) {
 				defer wg.Done()
-				
-				pipelineID, err := createPipeline(svc, gitlabURI, gitlabToken, branch, helmNamespace)
+
+				pipelineID, err := createPipeline(svc, gitlabURI, gitlabToken, ref, helmNamespace)
 				if err != nil {
 					errors <- fmt.Errorf("failed to create pipeline for %s: %v", svc.Name, err)
 					return
@@ -127,7 +127,7 @@ func CreatePipelines(services []Service, branch string, helmNamespace string) er
 }
 
 // createPipeline creates a single pipeline
-func createPipeline(service Service, gitlabURI, gitlabToken, branch, helmNamespace string) (int, error) {
+func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace string) (int, error) {
 	// URL encode the project path
 	projectPath := url.QueryEscape(service.GitlabProject)
 	
