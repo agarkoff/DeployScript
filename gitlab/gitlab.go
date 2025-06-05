@@ -156,7 +156,7 @@ func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace 
 	req.Header.Set("PRIVATE-TOKEN", gitlabToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
@@ -187,7 +187,7 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d", gitlabURI, projectPath, pipelineID)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	
+
 	// Poll every 30 seconds
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
