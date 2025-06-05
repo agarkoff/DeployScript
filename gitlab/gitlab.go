@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -131,12 +130,6 @@ func CreatePipelines(services []Service, ref string, helmNamespace string) error
 func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace string) (int, error) {
 	// URL encode the project path
 	projectPath := url.QueryEscape(service.GitlabProject)
-	
-	// First, check if HELM_NAMESPACE variable needs to be set
-	needsHelmNamespace, err := checkHelmNamespaceVariable(service, gitlabURI, gitlabToken)
-	if err != nil {
-		return 0, fmt.Errorf("failed to check HELM_NAMESPACE variable: %v", err)
-	}
 
 	// Prepare the request
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipeline", gitlabURI, projectPath)
@@ -186,52 +179,6 @@ func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace 
 
 	fmt.Printf("  Created pipeline for %s: %s\n", service.Name, pipelineResp.WebURL)
 	return pipelineResp.ID, nil
-}
-
-// checkHelmNamespaceVariable checks if HELM_NAMESPACE variable needs to be set
-func checkHelmNamespaceVariable(service Service, gitlabURI, gitlabToken string) (bool, error) {
-	// URL encode the project path
-	projectPath := url.QueryEscape(service.GitlabProject)
-	
-	// Get project variables
-	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/variables/HELM_NAMESPACE", gitlabURI, projectPath)
-	
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return false, err
-	}
-
-	req.Header.Set("PRIVATE-TOKEN", gitlabToken)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-
-	// If variable doesn't exist, we need to set it
-	if resp.StatusCode == http.StatusNotFound {
-		return true, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return false, fmt.Errorf("failed to get variable: %s", string(body))
-	}
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return false, err
-	}
-
-	var variable ProjectVariable
-	if err := json.Unmarshal(body, &variable); err != nil {
-		return false, err
-	}
-
-	// If variable exists but is empty, we need to set it
-	return variable.Value == "", nil
 }
 
 // waitForPipeline waits for a pipeline to complete
