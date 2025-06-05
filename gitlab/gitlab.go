@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -139,23 +140,28 @@ func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace 
 
 	// Prepare the request
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipeline", gitlabURI, projectPath)
-	
-	// Build form data
-	data := url.Values{}
-	data.Set("ref", branch)
-	
-	// Add HELM_NAMESPACE if needed
-	if needsHelmNamespace && helmNamespace != "" {
-		data.Add("variables[HELM_NAMESPACE]", helmNamespace)
+
+	// Build request body
+	requestBody := map[string]interface{}{
+		"ref": ref,
+		"variables": []map[string]string{
+			{"key": "CI_PIPELINE_SOURCE", "value": "web"},
+			{"key": "HELM_NAMESPACE", "value": helmNamespace},
+		},
 	}
 
-	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal request body: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return 0, err
 	}
 
 	req.Header.Set("PRIVATE-TOKEN", gitlabToken)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
