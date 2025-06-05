@@ -2,26 +2,15 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-)
 
-// ANSI color codes
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorCyan   = "\033[36m"
-	colorYellow = "\033[33m"
+	"deploy/git"
+	"deploy/maven"
 )
 
 func main() {
@@ -59,11 +48,11 @@ func main() {
 	fmt.Println("Phase 1: Checking git status...")
 	for _, service := range services {
 		fmt.Printf("  Checking service: %s\n", service)
-		if err := checkGitClean(serviceDirs[service]); err != nil {
+		if err := git.CheckClean(serviceDirs[service]); err != nil {
 			fmt.Printf("\nWarning: Git working copy is not clean in %s\n", service)
 
 			// Show git status
-			if err := showGitStatus(serviceDirs[service]); err != nil {
+			if err := git.ShowStatus(serviceDirs[service]); err != nil {
 				log.Fatalf("Failed to show git status in %s: %v", service, err)
 			}
 
@@ -79,7 +68,7 @@ func main() {
 
 			// Clean the working directory
 			fmt.Printf("  Cleaning working directory for %s...\n", service)
-			if err := cleanGitWorkingDirectory(serviceDirs[service]); err != nil {
+			if err := git.CleanWorkingDirectory(serviceDirs[service]); err != nil {
 				log.Fatalf("Failed to clean working directory in %s: %v", service, err)
 			}
 		}
@@ -89,7 +78,7 @@ func main() {
 	fmt.Println("\nPhase 2: Switching to develop branch...")
 	for _, service := range services {
 		fmt.Printf("  Switching service: %s\n", service)
-		if err := gitCheckout(serviceDirs[service], "develop"); err != nil {
+		if err := git.Checkout(serviceDirs[service], "develop"); err != nil {
 			log.Fatalf("Failed to checkout develop branch in %s: %v", service, err)
 		}
 	}
@@ -98,7 +87,7 @@ func main() {
 	fmt.Println("\nPhase 3: Pulling latest changes...")
 	for _, service := range services {
 		fmt.Printf("  Pulling service: %s\n", service)
-		if err := gitPull(serviceDirs[service]); err != nil {
+		if err := git.Pull(serviceDirs[service]); err != nil {
 			log.Fatalf("Failed to pull in %s: %v", service, err)
 		}
 	}
@@ -107,7 +96,7 @@ func main() {
 	fmt.Println("\nPhase 4: Updating pom.xml files...")
 	for _, service := range services {
 		fmt.Printf("  Updating service: %s\n", service)
-		if err := updatePomFiles(serviceDirs[service], version); err != nil {
+		if err := maven.UpdatePomFiles(serviceDirs[service], version); err != nil {
 			log.Fatalf("Failed to update pom files in %s: %v", service, err)
 		}
 	}
@@ -119,12 +108,12 @@ func main() {
 		fmt.Printf("  Creating branch for service: %s\n", service)
 
 		// Delete branch if it already exists (locally and remotely)
-		if err := deleteBranchIfExists(serviceDirs[service], branchName); err != nil {
+		if err := git.DeleteBranchIfExists(serviceDirs[service], branchName); err != nil {
 			log.Fatalf("Failed to delete existing branch in %s: %v", service, err)
 		}
 
 		// Create new branch
-		if err := gitCheckout(serviceDirs[service], "-b", branchName); err != nil {
+		if err := git.Checkout(serviceDirs[service], "-b", branchName); err != nil {
 			log.Fatalf("Failed to create release branch in %s: %v", service, err)
 		}
 	}
@@ -134,7 +123,7 @@ func main() {
 	fmt.Println(strings.Repeat("=", 80))
 	for _, service := range services {
 		fmt.Printf("\n--- Changes in service: %s ---\n", service)
-		if err := showGitDiff(serviceDirs[service]); err != nil {
+		if err := git.ShowDiff(serviceDirs[service]); err != nil {
 			// Don't fail if diff is empty, just continue
 			fmt.Println("No changes to show")
 		}
@@ -146,10 +135,10 @@ func main() {
 	commitMsg := fmt.Sprintf("Up to version %s.0", version)
 	for _, service := range services {
 		fmt.Printf("  Committing service: %s\n", service)
-		if err := gitAddAll(serviceDirs[service]); err != nil {
+		if err := git.AddAll(serviceDirs[service]); err != nil {
 			log.Fatalf("Failed to add files in %s: %v", service, err)
 		}
-		if err := gitCommit(serviceDirs[service], commitMsg); err != nil {
+		if err := git.Commit(serviceDirs[service], commitMsg); err != nil {
 			log.Fatalf("Failed to commit in %s: %v", service, err)
 		}
 	}
@@ -161,12 +150,12 @@ func main() {
 		fmt.Printf("  Creating tag for service: %s\n", service)
 
 		// Delete tag if it already exists (locally and remotely)
-		if err := deleteTagIfExists(serviceDirs[service], tagName); err != nil {
+		if err := git.DeleteTagIfExists(serviceDirs[service], tagName); err != nil {
 			log.Fatalf("Failed to delete existing tag in %s: %v", service, err)
 		}
 
 		// Create new tag
-		if err := gitTag(serviceDirs[service], tagName); err != nil {
+		if err := git.Tag(serviceDirs[service], tagName); err != nil {
 			log.Fatalf("Failed to create tag in %s: %v", service, err)
 		}
 	}
@@ -175,7 +164,7 @@ func main() {
 	fmt.Println("\nPhase 8: Cleaning Maven cache and building services...")
 
 	// Clean Maven cache
-	if err := cleanMavenCache(); err != nil {
+	if err := maven.CleanCache(); err != nil {
 		log.Fatalf("Failed to clean Maven cache: %v", err)
 	}
 
@@ -184,11 +173,11 @@ func main() {
 		fmt.Printf("\nBuilding service: %s\n", service)
 		fmt.Println(strings.Repeat("-", 60))
 
-		if err := buildService(serviceDirs[service]); err != nil {
+		if err := maven.BuildService(serviceDirs[service]); err != nil {
 			log.Fatalf("Build failed for service %s: %v", service, err)
 		}
 
-		fmt.Printf("%sService %s built successfully!%s\n", colorGreen, service, colorReset)
+		fmt.Printf("%sService %s built successfully!%s\n", git.ColorGreen, service, git.ColorReset)
 	}
 
 	// Wait for user confirmation
@@ -201,472 +190,10 @@ func main() {
 	fmt.Println("\nPhase 9: Pushing changes and tags...")
 	for _, service := range services {
 		fmt.Printf("  Pushing service: %s\n", service)
-		if err := gitPushWithTags(serviceDirs[service]); err != nil {
+		if err := git.PushWithTags(serviceDirs[service]); err != nil {
 			log.Fatalf("Failed to push in %s: %v", service, err)
 		}
 	}
 
 	fmt.Println("\nDeployment script completed successfully!")
-}
-
-func cleanMavenCache() error {
-	// Get Maven local repository path
-	mavenRepo := getMavenLocalRepository()
-
-	// Construct path to ru\gov\pfr\ecp\apso\proezd\
-	targetPath := filepath.Join(mavenRepo, "ru", "gov", "pfr", "ecp", "apso", "proezd")
-
-	fmt.Printf("Cleaning Maven cache: %s\n", targetPath)
-
-	// Check if directory exists
-	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-		fmt.Println("Maven cache directory does not exist, skipping cleanup")
-		return nil
-	}
-
-	// Remove the directory
-	if err := os.RemoveAll(targetPath); err != nil {
-		return fmt.Errorf("failed to remove Maven cache directory: %v", err)
-	}
-
-	fmt.Println("Maven cache cleaned successfully")
-	return nil
-}
-
-func getMavenLocalRepository() string {
-	// First, try to get from M2_REPO environment variable
-	if m2Repo := os.Getenv("M2_REPO"); m2Repo != "" {
-		return m2Repo
-	}
-
-	// Then, try to get from MAVEN_OPTS or standard location
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		log.Printf("Warning: Could not get user home directory: %v", err)
-		homeDir = ""
-	}
-
-	// Default Maven repository location
-	if homeDir != "" {
-		return filepath.Join(homeDir, ".m2", "repository")
-	}
-
-	// Fallback for Windows
-	if runtime.GOOS == "windows" {
-		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
-			return filepath.Join(userProfile, ".m2", "repository")
-		}
-	}
-
-	log.Fatal("Could not determine Maven local repository path")
-	return ""
-}
-
-func buildService(serviceDir string) error {
-	// Create Maven command
-	cmd := exec.Command("mvn", "clean", "install")
-	cmd.Dir = serviceDir
-
-	// Capture output
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Also print output in real-time
-	cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
-	cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
-
-	// Run the build
-	err := cmd.Run()
-
-	if err != nil {
-		// Print error details
-		fmt.Printf("\n%sBuild failed!%s\n", colorRed, colorReset)
-		if stderr.Len() > 0 {
-			fmt.Printf("Error output:\n%s\n", stderr.String())
-		}
-		return fmt.Errorf("mvn clean install failed: %v", err)
-	}
-
-	return nil
-}
-
-func readConfig(filename string) ([]string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var services []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			services = append(services, line)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return services, nil
-}
-
-func checkGitClean(dir string) error {
-	// First, update the index to refresh cached file stats
-	cmd := exec.Command("git", "update-index", "--refresh")
-	cmd.Dir = dir
-	cmd.Run() // Ignore errors, as it returns non-zero if there are changes
-
-	// Now check if there are any changes to tracked files
-	cmd = exec.Command("git", "diff-index", "--quiet", "HEAD", "--")
-	cmd.Dir = dir
-	err := cmd.Run()
-
-	if err != nil {
-		// Exit code 1 means there are changes, other errors are real problems
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return fmt.Errorf("working directory has uncommitted changes")
-		}
-		return err
-	}
-
-	return nil
-}
-
-func gitCheckout(dir string, args ...string) error {
-	cmdArgs := append([]string{"checkout"}, args...)
-	cmd := exec.Command("git", cmdArgs...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, output)
-	}
-	return nil
-}
-
-func gitPull(dir string) error {
-	cmd := exec.Command("git", "pull")
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, output)
-	}
-	return nil
-}
-
-func gitAddAll(dir string) error {
-	cmd := exec.Command("git", "add", ".")
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, output)
-	}
-	return nil
-}
-
-func gitCommit(dir string, message string) error {
-	cmd := exec.Command("git", "commit", "-m", message)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, output)
-	}
-	return nil
-}
-
-func gitTag(dir string, tagName string) error {
-	cmd := exec.Command("git", "tag", tagName)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, output)
-	}
-	return nil
-}
-
-func gitPushWithTags(dir string) error {
-	// First, push the branch and tags with force to overwrite remote
-	cmd := exec.Command("git", "push", "-u", "origin", "HEAD", "--tags", "--force-with-lease")
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, output)
-	}
-	return nil
-}
-
-func deleteBranchIfExists(dir string, branchName string) error {
-	// Try to delete local branch (ignore error if it doesn't exist)
-	cmd := exec.Command("git", "branch", "-D", branchName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, branch might not exist
-
-	// Try to delete remote branch (ignore error if it doesn't exist)
-	cmd = exec.Command("git", "push", "origin", "--delete", branchName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, remote branch might not exist
-
-	return nil
-}
-
-func deleteTagIfExists(dir string, tagName string) error {
-	// Try to delete local tag (ignore error if it doesn't exist)
-	cmd := exec.Command("git", "tag", "-d", tagName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, tag might not exist
-
-	// Try to delete remote tag (ignore error if it doesn't exist)
-	cmd = exec.Command("git", "push", "origin", ":refs/tags/"+tagName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, remote tag might not exist
-
-	return nil
-}
-
-func showGitStatus(dir string) error {
-	cmd := exec.Command("git", "status")
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func showGitDiff(dir string) error {
-	cmd := exec.Command("git", "diff")
-	cmd.Dir = dir
-
-	// Capture output to process it
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-
-	err := cmd.Run()
-	if err != nil {
-		// If there's no diff, git diff returns 0, so this is a real error
-		return err
-	}
-
-	// Process the output line by line
-	scanner := bufio.NewScanner(&stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		coloredLine := colorizeGitDiffLine(line)
-		fmt.Println(coloredLine)
-	}
-
-	return scanner.Err()
-}
-
-func colorizeGitDiffLine(line string) string {
-	if len(line) == 0 {
-		return line
-	}
-
-	switch line[0] {
-	case '-':
-		// Lines starting with --- are file headers, not deletions
-		if strings.HasPrefix(line, "---") {
-			return colorCyan + line + colorReset
-		}
-		// Deleted lines
-		return colorRed + line + colorReset
-	case '+':
-		// Lines starting with +++ are file headers, not additions
-		if strings.HasPrefix(line, "+++") {
-			return colorCyan + line + colorReset
-		}
-		// Added lines
-		return colorGreen + line + colorReset
-	case '@':
-		// Hunk headers
-		return colorCyan + line + colorReset
-	case 'd':
-		// diff headers
-		if strings.HasPrefix(line, "diff ") {
-			return colorYellow + line + colorReset
-		}
-		return line
-	case 'i':
-		// index headers
-		if strings.HasPrefix(line, "index ") {
-			return colorYellow + line + colorReset
-		}
-		return line
-	default:
-		return line
-	}
-}
-
-func cleanGitWorkingDirectory(dir string) error {
-	// Reset all tracked files to HEAD
-	cmd := exec.Command("git", "reset", "--hard", "HEAD")
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to reset: %v: %s", err, output)
-	}
-
-	return nil
-}
-
-func updatePomFiles(dir string, version string) error {
-	// Find all pom.xml files
-	var pomFiles []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Name() == "pom.xml" {
-			pomFiles = append(pomFiles, path)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	// Update each pom.xml
-	for _, pomFile := range pomFiles {
-		// Check if this is a root pom (in the service's top directory)
-		isRootPom := filepath.Dir(pomFile) == dir
-
-		if err := updatePomFile(pomFile, version, isRootPom); err != nil {
-			return fmt.Errorf("failed to update %s: %v", pomFile, err)
-		}
-	}
-
-	return nil
-}
-
-func updatePomFile(filename string, version string, isRootPom bool) error {
-	// Read file
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return err
-	}
-
-	content := string(data)
-	newVersion := version + ".0"
-
-	// Parse line by line
-	lines := strings.Split(content, "\n")
-
-	// Flags for tracking context
-	insideProject := false
-	insideParent := false
-	insideProperties := false
-
-	// Counters for tracking what we've updated
-	rootVersionUpdated := false
-	parentVersionUpdated := false
-
-	// Counter for tags after project
-	tagsAfterProject := 0
-
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Track entering/exiting project
-		if strings.Contains(line, "<project") {
-			insideProject = true
-			tagsAfterProject = 0
-		}
-
-		// Track entering/exiting parent
-		if strings.Contains(line, "<parent>") {
-			insideParent = true
-		} else if strings.Contains(line, "</parent>") {
-			insideParent = false
-		}
-
-		// Track entering/exiting properties
-		if strings.Contains(line, "<properties>") {
-			insideProperties = true
-		} else if strings.Contains(line, "</properties>") {
-			insideProperties = false
-		}
-
-		// Count tags after project (to determine if version is direct child)
-		if insideProject && !insideParent && !insideProperties {
-			if strings.Contains(trimmed, "<") && !strings.Contains(trimmed, "</") &&
-				!strings.Contains(trimmed, "<version>") {
-				tagsAfterProject++
-			}
-		}
-
-		// Update version tags
-		if strings.Contains(trimmed, "<version>") && strings.Contains(trimmed, "</version>") {
-
-			// Extract current version
-			start := strings.Index(trimmed, "<version>") + 9
-			end := strings.Index(trimmed, "</version>")
-
-			if start > 8 && end > start {
-				currentVersion := trimmed[start:end]
-
-				// CASE 1: Root POM - update version that's direct child of project
-				if isRootPom && insideProject && !insideParent && !insideProperties &&
-					!rootVersionUpdated && tagsAfterProject <= 4 {
-					// Replace version
-					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
-						"<version>"+newVersion+"</version>", 1)
-					lines[i] = newLine
-					rootVersionUpdated = true
-				}
-
-				// CASE 2a: Submodule POM - update version inside parent
-				if !isRootPom && insideParent && !parentVersionUpdated {
-					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
-						"<version>"+newVersion+"</version>", 1)
-					lines[i] = newLine
-					parentVersionUpdated = true
-				}
-
-				// CASE 2b: Submodule POM - update project version
-				if !isRootPom && insideProject && !insideParent && !insideProperties &&
-					!rootVersionUpdated && tagsAfterProject <= 4 {
-					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
-						"<version>"+newVersion+"</version>", 1)
-					lines[i] = newLine
-					rootVersionUpdated = true
-				}
-			}
-		}
-
-		// CASE 3: Update proezd properties
-		if insideProperties && strings.Contains(trimmed, "proezd") &&
-			strings.Contains(trimmed, "<") && strings.Contains(trimmed, ">") {
-			// Find property tag with proezd in name
-			startTag := strings.Index(trimmed, "<")
-			endTag := strings.Index(trimmed, ">")
-
-			if startTag >= 0 && endTag > startTag {
-				tagContent := trimmed[startTag+1 : endTag]
-
-				// Check if this is a proezd property (not a closing tag)
-				if strings.Contains(tagContent, "proezd") && !strings.HasPrefix(tagContent, "/") {
-					// Find the value
-					valueStart := endTag + 1
-					valueEnd := strings.Index(trimmed[valueStart:], "<")
-
-					if valueEnd > 0 {
-						// Replace the value
-						oldValue := trimmed[valueStart : valueStart+valueEnd]
-						newLine := strings.Replace(line, ">"+oldValue+"<", ">"+newVersion+"<", 1)
-						lines[i] = newLine
-					}
-				}
-			}
-		}
-	}
-
-	// Join lines back
-	content = strings.Join(lines, "\n")
-
-	// Write file back
-	return ioutil.WriteFile(filename, []byte(content), 0644)
 }
