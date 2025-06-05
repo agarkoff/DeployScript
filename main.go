@@ -9,39 +9,61 @@ import (
 	"path/filepath"
 	"strings"
 
+	"deploy/config"
 	"deploy/git"
+	"deploy/gitlab"
 	"deploy/maven"
 )
 
 func main() {
 	// Parse command line arguments
+	var helmNamespace string
+	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace to use if not set in GitLab")
 	flag.Parse()
 	args := flag.Args()
 
 	if len(args) != 2 {
-		log.Fatal("Usage: deploy <directory> <version>")
+		log.Fatal("Usage: deploy [-namespace <namespace>] <directory> <version>")
 	}
 
 	baseDir := args[0]
 	version := args[1]
 
 	// Read configuration file
-	services, err := readConfig("deploy.conf")
+	cfg, err := config.ReadYAMLConfig("deploy.yaml")
 	if err != nil {
 		log.Fatalf("Failed to read config: %v", err)
 	}
 
 	// Build service directories map
 	serviceDirs := make(map[string]string)
-	for _, service := range services {
-		serviceDir := filepath.Join(baseDir, service)
+	serviceConfigs := make(map[string]gitlab.Service)
+
+	for _, service := range cfg.Services {
+		serviceDir := filepath.Join(baseDir, service.Directory)
 
 		// Check if service directory exists
 		if _, err := os.Stat(serviceDir); os.IsNotExist(err) {
 			log.Fatalf("Service directory does not exist: %s", serviceDir)
 		}
 
-		serviceDirs[service] = serviceDir
+		serviceDirs[service.Name] = serviceDir
+
+		// Convert config.Service to gitlab.Service
+		gitlabService := gitlab.Service{
+			Name:          service.Name,
+			Directory:     service.Directory,
+			GitlabProject: service.GitlabProject,
+			Group:         service.Group,
+			Sequential:    service.Sequential,
+		}
+		serviceConfigs[service.Name] = gitlabService
+	}
+
+	// Extract service names for compatibility
+	services := make([]string, len(cfg.Services))
+	for i, service := range cfg.Services {
+		services[i] = service.Name
 	}
 
 	// Phase 1: Check if all git working copies are clean
@@ -193,6 +215,25 @@ func main() {
 		if err := git.PushWithTags(serviceDirs[service]); err != nil {
 			log.Fatalf("Failed to push in %s: %v", service, err)
 		}
+	}
+
+	// Phase 10: Create GitLab pipelines
+	fmt.Println("\nPhase 10: Creating GitLab pipelines...")
+
+	// Convert services to gitlab.Service slice
+	gitlabServices := make([]gitlab.Service, len(cfg.Services))
+	for i, service := range cfg.Services {
+		gitlabServices[i] = gitlab.Service{
+			Name:          service.Name,
+			Directory:     service.Directory,
+			GitlabProject: service.GitlabProject,
+			Group:         service.Group,
+			Sequential:    service.Sequential,
+		}
+	}
+
+	if err := gitlab.CreatePipelines(gitlabServices, branchName, helmNamespace); err != nil {
+		log.Fatalf("Failed to create GitLab pipelines: %v", err)
 	}
 
 	fmt.Println("\nDeployment script completed successfully!")
