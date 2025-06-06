@@ -35,11 +35,15 @@ func main() {
 		log.Fatalf("Failed to read config: %v", err)
 	}
 
+	// Get all services with metadata
+	allServices := cfg.GetAllServices()
+
 	// Build service directories map
 	serviceDirs := make(map[string]string)
 	serviceConfigs := make(map[string]gitlab.Service)
 
-	for _, service := range cfg.Services {
+	for _, svcMeta := range allServices {
+		service := svcMeta.Service
 		serviceDir := filepath.Join(baseDir, service.Directory)
 
 		// Check if service directory exists
@@ -49,21 +53,21 @@ func main() {
 
 		serviceDirs[service.Name] = serviceDir
 
-		// Convert config.Service to gitlab.Service
+		// Convert to gitlab.Service
 		gitlabService := gitlab.Service{
 			Name:          service.Name,
 			Directory:     service.Directory,
 			GitlabProject: service.GitlabProject,
-			Group:         service.Group,
-			Sequential:    service.Sequential,
+			Group:         svcMeta.Group,
+			Sequential:    svcMeta.Sequential,
 		}
 		serviceConfigs[service.Name] = gitlabService
 	}
 
 	// Extract service names for compatibility
-	services := make([]string, len(cfg.Services))
-	for i, service := range cfg.Services {
-		services[i] = service.Name
+	services := make([]string, len(allServices))
+	for i, svcMeta := range allServices {
+		services[i] = svcMeta.Service.Name
 	}
 
 	// Phase 1: Check if all git working copies are clean
@@ -220,20 +224,14 @@ func main() {
 	// Phase 10: Create GitLab pipelines
 	fmt.Println("\nPhase 10: Creating GitLab pipelines...")
 
-	// Convert services to gitlab.Service slice
-	gitlabServices := make([]gitlab.Service, len(cfg.Services))
-	for i, service := range cfg.Services {
-		gitlabServices[i] = gitlab.Service{
-			Name:          service.Name,
-			Directory:     service.Directory,
-			GitlabProject: service.GitlabProject,
-			Group:         service.Group,
-			Sequential:    service.Sequential,
-		}
+	// Convert service configs to slice for GitLab
+	gitlabServices := make([]gitlab.Service, 0, len(serviceConfigs))
+	for _, svc := range serviceConfigs {
+		gitlabServices = append(gitlabServices, svc)
 	}
 
 	// Use tag name instead of branch name for pipelines
-	if err := gitlab.CreatePipelines(gitlabServices, tagName, helmNamespace); err != nil {
+	if err := gitlab.CreatePipelinesFromConfig(cfg, tagName, helmNamespace); err != nil {
 		log.Fatalf("Failed to create GitLab pipelines: %v", err)
 	}
 

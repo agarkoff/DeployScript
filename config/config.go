@@ -1,8 +1,8 @@
 package config
 
 import (
-	"io/ioutil"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
 )
 
 // Service represents a service configuration
@@ -10,13 +10,12 @@ type Service struct {
 	Name          string `yaml:"name"`
 	Directory     string `yaml:"directory"`
 	GitlabProject string `yaml:"gitlab_project"`
-	Group         string `yaml:"group"`
-	Sequential    bool   `yaml:"sequential"`
 }
 
-// Config represents the deploy configuration
+// Config represents the deploy configuration with new structure
 type Config struct {
-	Services []Service `yaml:"services"`
+	Sequential []Service            `yaml:"sequential"`
+	Groups     map[string][]Service `yaml:"groups"`
 }
 
 // ReadYAMLConfig reads and parses the YAML configuration file
@@ -33,4 +32,38 @@ func ReadYAMLConfig(filename string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// GetAllServices returns all services as a flat list with metadata
+func (c *Config) GetAllServices() []ServiceWithMeta {
+	var services []ServiceWithMeta
+
+	// Add sequential services
+	for _, svc := range c.Sequential {
+		services = append(services, ServiceWithMeta{
+			Service:    svc,
+			Sequential: true,
+			Group:      "",
+		})
+	}
+
+	// Add grouped services
+	for groupName, groupServices := range c.Groups {
+		for _, svc := range groupServices {
+			services = append(services, ServiceWithMeta{
+				Service:    svc,
+				Sequential: false,
+				Group:      groupName,
+			})
+		}
+	}
+
+	return services
+}
+
+// ServiceWithMeta includes service with its execution metadata
+type ServiceWithMeta struct {
+	Service
+	Sequential bool
+	Group      string
 }

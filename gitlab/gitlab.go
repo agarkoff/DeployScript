@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"bytes"
+	"deploy/config"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -44,7 +45,74 @@ const (
 	colorReset = "\033[0m"
 )
 
-// CreatePipelines creates GitLab pipelines according to service configuration
+// CreatePipelinesFromConfig creates GitLab pipelines using the new config structure
+func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace string) error {
+	gitlabToken := os.Getenv("GITLAB_TOKEN")
+	if gitlabToken == "" {
+		return fmt.Errorf("GITLAB_TOKEN environment variable is not set")
+	}
+
+	gitlabURI := os.Getenv("GITLAB_URI")
+	if gitlabURI == "" {
+		return fmt.Errorf("GITLAB_URI environment variable is not set")
+	}
+
+	// Process sequential services first
+	for _, service := range cfg.Sequential {
+		fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s%s\n", colorBlue, service.Name, ref, colorReset)
+
+		pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, helmNamespace)
+		if err != nil {
+			return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
+		}
+
+		// Wait for pipeline to complete
+		if err := waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID); err != nil {
+			return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
+		}
+	}
+
+	// Process each group in sequence, but services within a group in parallel
+	for groupName, groupServices := range cfg.Groups {
+		fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s%s\n", colorBlue, groupName, ref, colorReset)
+
+		var wg sync.WaitGroup
+		errors := make(chan error, len(groupServices))
+
+		for _, service := range groupServices {
+			wg.Add(1)
+			go func(svc config.Service) {
+				defer wg.Done()
+
+				pipelineID, err := createPipelineForService(svc, gitlabURI, gitlabToken, ref, helmNamespace)
+				if err != nil {
+					errors <- fmt.Errorf("failed to create pipeline for %s: %v", svc.Name, err)
+					return
+				}
+
+				// Wait for pipeline to complete
+				if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID); err != nil {
+					errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
+					return
+				}
+			}(service)
+		}
+
+		wg.Wait()
+		close(errors)
+
+		// Check for errors
+		for err := range errors {
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// CreatePipelines creates GitLab pipelines according to service configuration (legacy function)
 func CreatePipelines(services []Service, ref string, helmNamespace string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
@@ -124,6 +192,28 @@ func CreatePipelines(services []Service, ref string, helmNamespace string) error
 	}
 
 	return nil
+}
+
+// createPipelineForService creates a pipeline for config.Service
+func createPipelineForService(service config.Service, gitlabURI, gitlabToken, ref, helmNamespace string) (int, error) {
+	// Convert to gitlab.Service for compatibility
+	gitlabService := Service{
+		Name:          service.Name,
+		Directory:     service.Directory,
+		GitlabProject: service.GitlabProject,
+	}
+	return createPipeline(gitlabService, gitlabURI, gitlabToken, ref, helmNamespace)
+}
+
+// waitForPipelineForService waits for a pipeline for config.Service
+func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int) error {
+	// Convert to gitlab.Service for compatibility
+	gitlabService := Service{
+		Name:          service.Name,
+		Directory:     service.Directory,
+		GitlabProject: service.GitlabProject,
+	}
+	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID)
 }
 
 // createPipeline creates a single pipeline
