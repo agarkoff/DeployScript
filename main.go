@@ -144,6 +144,13 @@ func main() {
 		}
 	}
 
+	// Phase 5.1: Create release notes
+	fmt.Println("\nPhase 5.1: Creating release notes...")
+	if err := git.CreateReleaseNotes(serviceDirs, version, cfg.TaskURLPrefix); err != nil {
+		// Don't fail the deployment if release notes creation fails
+		fmt.Printf("Warning: Failed to create release notes: %v\n", err)
+	}
+
 	// Show all diffs before committing
 	fmt.Println("\nShowing all changes before commit:")
 	fmt.Println(strings.Repeat("=", 80))

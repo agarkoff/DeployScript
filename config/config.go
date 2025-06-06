@@ -14,8 +14,9 @@ type Service struct {
 
 // Config represents the deploy configuration with new structure
 type Config struct {
-	Sequential []Service            `yaml:"sequential"`
-	Groups     map[string][]Service `yaml:"groups"`
+	TaskURLPrefix string               `yaml:"task_url_prefix"`
+	Sequential    []Service            `yaml:"sequential"`
+	Groups        map[string][]Service `yaml:"groups"`
 }
 
 // ReadYAMLConfig reads and parses the YAML configuration file
