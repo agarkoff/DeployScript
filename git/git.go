@@ -456,13 +456,21 @@ func CreateReleaseNotes(dirs map[string]string, version int, taskURLPrefix strin
 		}
 
 		tasksFoundBetween := 0
+		serviceTasksBetween := []string{}
 		for _, commit := range commitsBetweenReleases {
 			if commit.TaskID != "" {
 				allTasksBetweenReleases[commit.TaskID] = true
+				serviceTasksBetween = append(serviceTasksBetween, commit.TaskID)
 				tasksFoundBetween++
 			}
 		}
 		fmt.Printf("Found %d commits, %d with task IDs\n", len(commitsBetweenReleases), tasksFoundBetween)
+		if len(serviceTasksBetween) > 0 {
+			fmt.Println("Tasks found between releases:")
+			for _, taskID := range serviceTasksBetween {
+				fmt.Printf("  %s\n", taskID)
+			}
+		}
 
 		// Get tasks within previous release (from branch start to last tag/commit)
 		fmt.Printf("Getting commits in previous release (between %s and %s)...\n", prevBranchStart, lastCommitInPrevBranch)
@@ -473,13 +481,21 @@ func CreateReleaseNotes(dirs map[string]string, version int, taskURLPrefix strin
 		}
 
 		tasksFoundInPrev := 0
+		serviceTasksInPrev := []string{}
 		for _, commit := range commitsInPrevRelease {
 			if commit.TaskID != "" {
 				tasksInPreviousRelease[commit.TaskID] = true
+				serviceTasksInPrev = append(serviceTasksInPrev, commit.TaskID)
 				tasksFoundInPrev++
 			}
 		}
 		fmt.Printf("Found %d commits in previous release, %d with task IDs\n", len(commitsInPrevRelease), tasksFoundInPrev)
+		if len(serviceTasksInPrev) > 0 {
+			fmt.Println("Tasks found in previous release:")
+			for _, taskID := range serviceTasksInPrev {
+				fmt.Printf("  %s\n", taskID)
+			}
+		}
 
 		serviceStats[service] = struct {
 			TotalCommits int
@@ -502,8 +518,39 @@ func CreateReleaseNotes(dirs map[string]string, version int, taskURLPrefix strin
 
 	fmt.Printf("\n=== Summary ===\n")
 	fmt.Printf("Total tasks between releases: %d\n", len(allTasksBetweenReleases))
-	fmt.Printf("Tasks in previous release: %d\n", len(tasksInPreviousRelease))
-	fmt.Printf("New tasks in this release: %d\n\n", len(newTasks))
+	if len(allTasksBetweenReleases) > 0 {
+		fmt.Println("All tasks between releases:")
+		allTasksList := make([]string, 0, len(allTasksBetweenReleases))
+		for taskID := range allTasksBetweenReleases {
+			allTasksList = append(allTasksList, taskID)
+		}
+		sort.Strings(allTasksList)
+		for _, taskID := range allTasksList {
+			fmt.Printf("  %s\n", taskID)
+		}
+	}
+
+	fmt.Printf("\nTasks in previous release: %d\n", len(tasksInPreviousRelease))
+	if len(tasksInPreviousRelease) > 0 {
+		fmt.Println("Tasks that were already in previous release:")
+		prevTasksList := make([]string, 0, len(tasksInPreviousRelease))
+		for taskID := range tasksInPreviousRelease {
+			prevTasksList = append(prevTasksList, taskID)
+		}
+		sort.Strings(prevTasksList)
+		for _, taskID := range prevTasksList {
+			fmt.Printf("  %s\n", taskID)
+		}
+	}
+
+	fmt.Printf("\nNew tasks in this release: %d\n", len(newTasks))
+	if len(newTasks) > 0 {
+		fmt.Println("New tasks (will be included in release notes):")
+		for _, taskID := range newTasks {
+			fmt.Printf("  %s\n", taskID)
+		}
+	}
+	fmt.Println()
 
 	// Sort task IDs for the final list
 	taskIDs := make([]string, 0, len(newTasks))
