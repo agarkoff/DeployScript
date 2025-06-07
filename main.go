@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"deploy/config"
@@ -27,7 +28,13 @@ func main() {
 	}
 
 	baseDir := args[0]
-	version := args[1]
+	versionStr := args[1]
+
+	// Parse version as integer
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		log.Fatalf("Version must be an integer: %v", err)
+	}
 
 	// Read configuration file
 	cfg, err := config.ReadYAMLConfig("deploy.yaml")
@@ -120,16 +127,17 @@ func main() {
 
 	// Phase 4: Update all pom.xml files
 	fmt.Println("\nPhase 4: Updating pom.xml files...")
+	versionString := fmt.Sprintf("%d", version)
 	for _, service := range services {
 		fmt.Printf("  Updating service: %s\n", service)
-		if err := maven.UpdatePomFiles(serviceDirs[service], version); err != nil {
+		if err := maven.UpdatePomFiles(serviceDirs[service], versionString); err != nil {
 			log.Fatalf("Failed to update pom files in %s: %v", service, err)
 		}
 	}
 
 	// Phase 5: Create release branches for all
 	fmt.Println("\nPhase 5: Creating release branches...")
-	branchName := fmt.Sprintf("release/%s", version)
+	branchName := fmt.Sprintf("release/%d", version)
 	for _, service := range services {
 		fmt.Printf("  Creating branch for service: %s\n", service)
 
@@ -165,7 +173,7 @@ func main() {
 
 	// Phase 6: Commit changes for all
 	fmt.Println("\nPhase 6: Committing changes...")
-	commitMsg := fmt.Sprintf("Up to version %s.0", version)
+	commitMsg := fmt.Sprintf("Up to version %d.0", version)
 	for _, service := range services {
 		fmt.Printf("  Committing service: %s\n", service)
 		if err := git.AddAll(serviceDirs[service]); err != nil {
@@ -178,7 +186,7 @@ func main() {
 
 	// Phase 7: Create tags for all
 	fmt.Println("\nPhase 7: Creating tags...")
-	tagName := fmt.Sprintf("release/%s.0", version)
+	tagName := fmt.Sprintf("release/%d.0", version)
 	for _, service := range services {
 		fmt.Printf("  Creating tag for service: %s\n", service)
 
