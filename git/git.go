@@ -332,7 +332,7 @@ func GetCommitsBetween(dir string, fromRef string, toRef string) ([]CommitInfo, 
 	commits := make([]CommitInfo, 0, len(lines))
 
 	// Regex to match task IDs (2-10 letters followed by - and 5-6 digits)
-	taskRegex := regexp.MustCompile(`^([A-Za-z]{2,10})-(\d{5,6})`)
+	taskRegex := regexp.MustCompile(`([A-Za-z]{2,10})-(\d{5,6})`)
 
 	for _, line := range lines {
 		if line == "" {
@@ -349,10 +349,18 @@ func GetCommitsBetween(dir string, fromRef string, toRef string) ([]CommitInfo, 
 			Message: parts[1],
 		}
 
-		// Extract task ID if present
-		matches := taskRegex.FindStringSubmatch(commit.Message)
+		// Find all task IDs in the message
+		matches := taskRegex.FindAllString(commit.Message, -1)
 		if len(matches) > 0 {
-			commit.TaskID = matches[0]
+			// Для каждого найденного TaskID создается новый объект CommitInfo
+			for _, taskID := range matches {
+				newCommit := CommitInfo{
+					SHA:     commit.SHA,
+					Message: commit.Message,
+					TaskID:  taskID,
+				}
+				commits = append(commits, newCommit)
+			}
 		}
 
 		commits = append(commits, commit)
