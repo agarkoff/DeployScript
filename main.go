@@ -18,22 +18,53 @@ import (
 
 func main() {
 	// Parse command line arguments
-	var helmNamespace string
-	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace to use if not set in GitLab")
-	flag.Parse()
-	args := flag.Args()
+	var (
+		helmNamespace string
+		directory     string
+		versionStr    string
+	)
 
-	if len(args) != 2 {
-		log.Fatal("Usage: deploy [-namespace <namespace>] <directory> <version>")
+	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace to use if not set in GitLab")
+	flag.StringVar(&directory, "directory", "", "Base directory for services (required)")
+	flag.StringVar(&directory, "d", "", "Base directory for services (shorthand)")
+	flag.StringVar(&versionStr, "version", "", "Version number to deploy (required)")
+	flag.StringVar(&versionStr, "v", "", "Version number to deploy (shorthand)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nRequired options:\n")
+		fmt.Fprintf(os.Stderr, "  -directory, -d string\n")
+		fmt.Fprintf(os.Stderr, "        Base directory for services\n")
+		fmt.Fprintf(os.Stderr, "  -version, -v string\n")
+		fmt.Fprintf(os.Stderr, "        Version number to deploy (must be an integer)\n")
+		fmt.Fprintf(os.Stderr, "\nOptional options:\n")
+		fmt.Fprintf(os.Stderr, "  -namespace string\n")
+		fmt.Fprintf(os.Stderr, "        Helm namespace to use if not set in GitLab\n")
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -namespace production\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123\n", os.Args[0])
 	}
 
-	baseDir := args[0]
-	versionStr := args[1]
+	flag.Parse()
+
+	// Validate required parameters
+	if directory == "" {
+		log.Fatal("Error: -directory parameter is required\n\nUse -h for help")
+	}
+
+	if versionStr == "" {
+		log.Fatal("Error: -version parameter is required\n\nUse -h for help")
+	}
 
 	// Parse version as integer
 	version, err := strconv.Atoi(versionStr)
 	if err != nil {
-		log.Fatalf("Version must be an integer: %v", err)
+		log.Fatalf("Error: Version must be an integer, got '%s': %v", versionStr, err)
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(directory); os.IsNotExist(err) {
+		log.Fatalf("Error: Directory does not exist: %s", directory)
 	}
 
 	// Read configuration file
@@ -51,7 +82,7 @@ func main() {
 
 	for _, svcMeta := range allServices {
 		service := svcMeta.Service
-		serviceDir := filepath.Join(baseDir, service.Directory)
+		serviceDir := filepath.Join(directory, service.Directory)
 
 		// Check if service directory exists
 		if _, err := os.Stat(serviceDir); os.IsNotExist(err) {
@@ -76,6 +107,16 @@ func main() {
 	for i, svcMeta := range allServices {
 		services[i] = svcMeta.Service.Name
 	}
+
+	// Print deployment configuration
+	fmt.Println("=== Deployment Configuration ===")
+	fmt.Printf("Directory: %s\n", directory)
+	fmt.Printf("Version: %d\n", version)
+	if helmNamespace != "" {
+		fmt.Printf("Namespace: %s\n", helmNamespace)
+	}
+	fmt.Printf("Services: %d\n", len(services))
+	fmt.Println("================================\n")
 
 	// Phase 1: Check if all git working copies are clean
 	fmt.Println("Phase 1: Checking git status...")
