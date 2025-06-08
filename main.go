@@ -19,9 +19,10 @@ import (
 func main() {
 	// Parse command line arguments
 	var (
-		helmNamespace string
-		directory     string
-		versionStr    string
+		helmNamespace  string
+		directory      string
+		versionStr     string
+		mavenCachePath string
 	)
 
 	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace to use if not set in GitLab")
@@ -29,6 +30,8 @@ func main() {
 	flag.StringVar(&directory, "d", "", "Base directory for services (shorthand)")
 	flag.StringVar(&versionStr, "version", "", "Version number to deploy (required)")
 	flag.StringVar(&versionStr, "v", "", "Version number to deploy (shorthand)")
+	flag.StringVar(&mavenCachePath, "maven-cache-path", "", "Path to Maven cache for cleanup (required, e.g. ru/gov/pfr/ecp/apso/proezd)")
+	flag.StringVar(&mavenCachePath, "m", "", "Path to Maven cache for cleanup (shorthand)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
@@ -37,12 +40,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "        Base directory for services\n")
 		fmt.Fprintf(os.Stderr, "  -version, -v string\n")
 		fmt.Fprintf(os.Stderr, "        Version number to deploy (must be an integer)\n")
+		fmt.Fprintf(os.Stderr, "  -maven-cache-path, -m string\n")
+		fmt.Fprintf(os.Stderr, "        Path to Maven cache for cleanup (e.g. ru/gov/pfr/ecp/apso/proezd)\n")
 		fmt.Fprintf(os.Stderr, "\nOptional options:\n")
 		fmt.Fprintf(os.Stderr, "  -namespace string\n")
 		fmt.Fprintf(os.Stderr, "        Helm namespace to use if not set in GitLab\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -54,6 +59,10 @@ func main() {
 
 	if versionStr == "" {
 		log.Fatal("Error: -version parameter is required\n\nUse -h for help")
+	}
+
+	if mavenCachePath == "" {
+		log.Fatal("Error: -maven-cache-path parameter is required\n\nUse -h for help")
 	}
 
 	// Parse version as integer
@@ -112,6 +121,7 @@ func main() {
 	fmt.Println("=== Deployment Configuration ===")
 	fmt.Printf("Directory: %s\n", directory)
 	fmt.Printf("Version: %d\n", version)
+	fmt.Printf("Maven Cache Path: %s\n", mavenCachePath)
 	if helmNamespace != "" {
 		fmt.Printf("Namespace: %s\n", helmNamespace)
 	}
@@ -246,7 +256,7 @@ func main() {
 	fmt.Println("\nPhase 8: Cleaning Maven cache and building services...")
 
 	// Clean Maven cache
-	if err := maven.CleanCache(); err != nil {
+	if err := maven.CleanCache(mavenCachePath); err != nil {
 		log.Fatalf("Failed to clean Maven cache: %v", err)
 	}
 

@@ -13,13 +13,13 @@ import (
 	"strings"
 )
 
-// CleanCache cleans the Maven cache for the project artifacts
-func CleanCache() error {
+// CleanCache cleans the Maven cache for the specified path
+func CleanCache(cachePath string) error {
 	// Get Maven local repository path
 	mavenRepo := GetLocalRepository()
 
-	// Construct path to ru\gov\pfr\ecp\apso\proezd\
-	targetPath := filepath.Join(mavenRepo, "ru", "gov", "pfr", "ecp", "apso", "proezd")
+	// Construct full path
+	targetPath := filepath.Join(mavenRepo, cachePath)
 
 	fmt.Printf("Cleaning Maven cache: %s\n", targetPath)
 

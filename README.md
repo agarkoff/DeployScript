@@ -78,25 +78,26 @@ groups:
 ### Базовая команда
 
 ```bash
-./deploy -directory /path/to/services -version 123
+./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd
 ```
 
 ### С указанием namespace
 
 ```bash
-./deploy -directory /path/to/services -version 123 -namespace production
+./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production
 ```
 
 ### Короткая форма
 
 ```bash
-./deploy -d /path/to/services -v 123
+./deploy -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd
 ```
 
 ### Параметры командной строки
 
 - `-directory`, `-d` (обязательно): Базовая директория, содержащая все директории сервисов
 - `-version`, `-v` (обязательно): Номер версии для развёртывания (должен быть целым числом)
+- `-maven-cache-path`, `-m` (обязательно): Путь к Maven кешу для очистки (например, `ru/gov/pfr/ecp/apso/proezd`)
 - `-namespace` (опционально): Helm namespace для развёртывания
 - `-h`: Показать справочную информацию
 
@@ -127,9 +128,9 @@ groups:
 - Сравнивает с предыдущей релизной веткой
 - Извлекает ID задач из сообщений коммитов (формат: `TASK-12345`)
 - Создаёт файл `release-notes-{version}.txt` содержащий:
-    - Список новых задач, включённых в релиз
-    - Статистику по сервисам
-    - Ссылки на систему отслеживания задач (если настроено)
+  - Список новых задач, включённых в релиз
+  - Статистику по сервисам
+  - Ссылки на систему отслеживания задач (если настроено)
 
 ### Фаза 6: Коммит изменений
 - Добавляет все изменения в индекс
@@ -140,7 +141,7 @@ groups:
 - Удаляет существующие теги, если они есть
 
 ### Фаза 8: Сборка Maven
-- Очищает кеш Maven для артефактов проекта
+- Очищает кеш Maven по указанному пути (передаётся через параметр `-maven-cache-path`)
 - Собирает все сервисы последовательно с помощью `mvn clean install`
 - Показывает вывод сборки в реальном времени
 
@@ -226,7 +227,7 @@ export GITLAB_TOKEN="glpat-xxxxxxxxxxxx"
 export GITLAB_URI="https://gitlab.company.com"
 
 # Запуск развёртывания версии 150 в production namespace
-./deploy -directory /home/user/microservices -version 150 -namespace production
+./deploy -directory /home/user/microservices -version 150 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production
 
 # Инструмент выполнит:
 # 1. Проверку чистоты репозиториев
@@ -235,9 +236,10 @@ export GITLAB_URI="https://gitlab.company.com"
 # 4. Создание веток release/150
 # 5. Генерацию release-notes-150.txt
 # 6. Коммит и тегирование release/150.0
-# 7. Сборку всех сервисов
-# 8. Отправку изменений в GitLab
-# 9. Запуск пайплайнов развёртывания
+# 7. Очистку Maven кеша по пути ru/gov/pfr/ecp/apso/proezd
+# 8. Сборку всех сервисов
+# 9. Отправку изменений в GitLab
+# 10. Запуск пайплайнов развёртывания
 ```
 
 ## Структура проекта
