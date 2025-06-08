@@ -78,13 +78,13 @@ groups:
 ### Базовая команда
 
 ```bash
-./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production
+./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production
 ```
 
 ### Короткая форма
 
 ```bash
-./deploy -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -n staging
+./deploy -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging
 ```
 
 ### Параметры командной строки
@@ -92,6 +92,7 @@ groups:
 - `-directory`, `-d` (обязательно): Базовая директория, содержащая все директории сервисов
 - `-version`, `-v` (обязательно): Номер версии для развёртывания (должен быть целым числом)
 - `-maven-cache-path`, `-m` (обязательно): Путь к Maven кешу для очистки (например, `ru/gov/pfr/ecp/apso/proezd`)
+- `-pom-property-pattern`, `-p` (обязательно): Паттерн для поиска свойств в POM файлах для обновления версии (например, `proezd`)
 - `-namespace`, `-n` (обязательно): Helm namespace для развёртывания (например, `production`, `staging`, `test`)
 - `-h`: Показать справочную информацию
 
@@ -112,7 +113,7 @@ groups:
 ### Фаза 4: Обновление POM файлов
 - Обновляет версию во всех файлах `pom.xml` на `{version}.0`
 - Обновляет версии parent в подмодулях
-- Обновляет свойства, содержащие "proezd" в названии
+- Обновляет свойства, содержащие указанный паттерн (передаётся через параметр `-pom-property-pattern`)
 
 ### Фаза 5: Создание релизных веток
 - Создаёт ветку `release/{version}` для всех сервисов
@@ -229,13 +230,16 @@ export GITLAB_TOKEN="glpat-xxxxxxxxxxxx"
 export GITLAB_URI="https://gitlab.company.com"
 
 # Развёртывание версии 150 в production
-./deploy -directory /home/user/microservices -version 150 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production
+./deploy -directory /home/user/microservices -version 150 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production
 
 # Развёртывание версии 151 в staging
-./deploy -d /home/user/microservices -v 151 -m ru/gov/pfr/ecp/apso/proezd -n staging
+./deploy -d /home/user/microservices -v 151 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging
 
 # Развёртывание версии 152 в test
-./deploy -d /home/user/microservices -v 152 -m ru/gov/pfr/ecp/apso/proezd -n test
+./deploy -d /home/user/microservices -v 152 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n test
+
+# Использование с другим паттерном свойств
+./deploy -d /home/user/services -v 200 -m com/company/project -p myproject -n production
 
 # Инструмент выполнит:
 # 1. Проверку чистоты репозиториев

@@ -19,10 +19,11 @@ import (
 func main() {
 	// Parse command line arguments
 	var (
-		helmNamespace  string
-		directory      string
-		versionStr     string
-		mavenCachePath string
+		helmNamespace      string
+		directory          string
+		versionStr         string
+		mavenCachePath     string
+		pomPropertyPattern string
 	)
 
 	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace for deployment (required)")
@@ -33,6 +34,8 @@ func main() {
 	flag.StringVar(&versionStr, "v", "", "Version number to deploy (shorthand)")
 	flag.StringVar(&mavenCachePath, "maven-cache-path", "", "Path to Maven cache for cleanup (required, e.g. ru/gov/pfr/ecp/apso/proezd)")
 	flag.StringVar(&mavenCachePath, "m", "", "Path to Maven cache for cleanup (shorthand)")
+	flag.StringVar(&pomPropertyPattern, "pom-property-pattern", "", "Pattern to match properties in POM files for version update (required, e.g. proezd)")
+	flag.StringVar(&pomPropertyPattern, "p", "", "Pattern to match properties in POM files (shorthand)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
@@ -43,11 +46,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "        Version number to deploy (must be an integer)\n")
 		fmt.Fprintf(os.Stderr, "  -maven-cache-path, -m string\n")
 		fmt.Fprintf(os.Stderr, "        Path to Maven cache for cleanup (e.g. ru/gov/pfr/ecp/apso/proezd)\n")
+		fmt.Fprintf(os.Stderr, "  -pom-property-pattern, -p string\n")
+		fmt.Fprintf(os.Stderr, "        Pattern to match properties in POM files for version update (e.g. proezd)\n")
 		fmt.Fprintf(os.Stderr, "  -namespace, -n string\n")
 		fmt.Fprintf(os.Stderr, "        Helm namespace for deployment (e.g. production, staging, test)\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -n staging\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -63,6 +68,10 @@ func main() {
 
 	if mavenCachePath == "" {
 		log.Fatal("Error: -maven-cache-path parameter is required\n\nUse -h for help")
+	}
+
+	if pomPropertyPattern == "" {
+		log.Fatal("Error: -pom-property-pattern parameter is required\n\nUse -h for help")
 	}
 
 	if helmNamespace == "" {
@@ -126,6 +135,7 @@ func main() {
 	fmt.Printf("Directory: %s\n", directory)
 	fmt.Printf("Version: %d\n", version)
 	fmt.Printf("Maven Cache Path: %s\n", mavenCachePath)
+	fmt.Printf("POM Property Pattern: %s\n", pomPropertyPattern)
 	fmt.Printf("Namespace: %s\n", helmNamespace)
 	fmt.Printf("Services: %d\n", len(services))
 	fmt.Println("================================\n")
@@ -183,7 +193,7 @@ func main() {
 	versionString := fmt.Sprintf("%d", version)
 	for _, service := range services {
 		fmt.Printf("  Updating service: %s\n", service)
-		if err := maven.UpdatePomFiles(serviceDirs[service], versionString); err != nil {
+		if err := maven.UpdatePomFiles(serviceDirs[service], versionString, pomPropertyPattern); err != nil {
 			log.Fatalf("Failed to update pom files in %s: %v", service, err)
 		}
 	}

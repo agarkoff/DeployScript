@@ -100,7 +100,7 @@ func BuildService(serviceDir string) error {
 }
 
 // UpdatePomFiles updates all pom.xml files in the directory with the new version
-func UpdatePomFiles(dir string, version string) error {
+func UpdatePomFiles(dir string, version string, propertyPattern string) error {
 	// Find all pom.xml files
 	var pomFiles []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -121,7 +121,7 @@ func UpdatePomFiles(dir string, version string) error {
 		// Check if this is a root pom (in the service's top directory)
 		isRootPom := filepath.Dir(pomFile) == dir
 
-		if err := UpdatePomFile(pomFile, version, isRootPom); err != nil {
+		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern); err != nil {
 			return fmt.Errorf("failed to update %s: %v", pomFile, err)
 		}
 	}
@@ -130,7 +130,7 @@ func UpdatePomFiles(dir string, version string) error {
 }
 
 // UpdatePomFile updates a single pom.xml file with the new version
-func UpdatePomFile(filename string, version string, isRootPom bool) error {
+func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string) error {
 	// Read file
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -225,18 +225,18 @@ func UpdatePomFile(filename string, version string, isRootPom bool) error {
 			}
 		}
 
-		// CASE 3: Update proezd properties
-		if insideProperties && strings.Contains(trimmed, "proezd") &&
+		// CASE 3: Update properties matching the pattern
+		if insideProperties && strings.Contains(trimmed, propertyPattern) &&
 			strings.Contains(trimmed, "<") && strings.Contains(trimmed, ">") {
-			// Find property tag with proezd in name
+			// Find property tag with pattern in name
 			startTag := strings.Index(trimmed, "<")
 			endTag := strings.Index(trimmed, ">")
 
 			if startTag >= 0 && endTag > startTag {
 				tagContent := trimmed[startTag+1 : endTag]
 
-				// Check if this is a proezd property (not a closing tag)
-				if strings.Contains(tagContent, "proezd") && !strings.HasPrefix(tagContent, "/") {
+				// Check if this is a property matching pattern (not a closing tag)
+				if strings.Contains(tagContent, propertyPattern) && !strings.HasPrefix(tagContent, "/") {
 					// Find the value
 					valueStart := endTag + 1
 					valueEnd := strings.Index(trimmed[valueStart:], "<")
