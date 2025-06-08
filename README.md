@@ -78,19 +78,13 @@ groups:
 ### Базовая команда
 
 ```bash
-./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd
-```
-
-### С указанием namespace
-
-```bash
 ./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production
 ```
 
 ### Короткая форма
 
 ```bash
-./deploy -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd
+./deploy -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -n staging
 ```
 
 ### Параметры командной строки
@@ -98,7 +92,7 @@ groups:
 - `-directory`, `-d` (обязательно): Базовая директория, содержащая все директории сервисов
 - `-version`, `-v` (обязательно): Номер версии для развёртывания (должен быть целым числом)
 - `-maven-cache-path`, `-m` (обязательно): Путь к Maven кешу для очистки (например, `ru/gov/pfr/ecp/apso/proezd`)
-- `-namespace` (опционально): Helm namespace для развёртывания
+- `-namespace`, `-n` (обязательно): Helm namespace для развёртывания (например, `production`, `staging`, `test`)
 - `-h`: Показать справочную информацию
 
 ## Процесс развёртывания
@@ -151,6 +145,7 @@ groups:
 
 ### Фаза 10: Создание пайплайнов GitLab
 - Создаёт пайплайны для всех сервисов согласно конфигурации
+- Передаёт указанный namespace в переменную окружения `HELM_NAMESPACE`
 - Последовательные сервисы развёртываются один за другим
 - Групповые сервисы развёртываются параллельно внутри своих групп
 - Мониторит выполнение пайплайнов и сообщает о статусе
@@ -226,8 +221,21 @@ export GITLAB_URI="https://gitlab.company.com"
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxx"
 export GITLAB_URI="https://gitlab.company.com"
 
-# Запуск развёртывания версии 150 в production namespace
+## Пример полного цикла развёртывания
+
+```bash
+# Установка переменных окружения
+export GITLAB_TOKEN="glpat-xxxxxxxxxxxx"
+export GITLAB_URI="https://gitlab.company.com"
+
+# Развёртывание версии 150 в production
 ./deploy -directory /home/user/microservices -version 150 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production
+
+# Развёртывание версии 151 в staging
+./deploy -d /home/user/microservices -v 151 -m ru/gov/pfr/ecp/apso/proezd -n staging
+
+# Развёртывание версии 152 в test
+./deploy -d /home/user/microservices -v 152 -m ru/gov/pfr/ecp/apso/proezd -n test
 
 # Инструмент выполнит:
 # 1. Проверку чистоты репозиториев
@@ -239,7 +247,7 @@ export GITLAB_URI="https://gitlab.company.com"
 # 7. Очистку Maven кеша по пути ru/gov/pfr/ecp/apso/proezd
 # 8. Сборку всех сервисов
 # 9. Отправку изменений в GitLab
-# 10. Запуск пайплайнов развёртывания
+# 10. Запуск пайплайнов развёртывания в указанный namespace
 ```
 
 ## Структура проекта

@@ -25,7 +25,8 @@ func main() {
 		mavenCachePath string
 	)
 
-	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace to use if not set in GitLab")
+	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace for deployment (required)")
+	flag.StringVar(&helmNamespace, "n", "", "Helm namespace for deployment (shorthand)")
 	flag.StringVar(&directory, "directory", "", "Base directory for services (required)")
 	flag.StringVar(&directory, "d", "", "Base directory for services (shorthand)")
 	flag.StringVar(&versionStr, "version", "", "Version number to deploy (required)")
@@ -42,12 +43,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "        Version number to deploy (must be an integer)\n")
 		fmt.Fprintf(os.Stderr, "  -maven-cache-path, -m string\n")
 		fmt.Fprintf(os.Stderr, "        Path to Maven cache for cleanup (e.g. ru/gov/pfr/ecp/apso/proezd)\n")
-		fmt.Fprintf(os.Stderr, "\nOptional options:\n")
-		fmt.Fprintf(os.Stderr, "  -namespace string\n")
-		fmt.Fprintf(os.Stderr, "        Helm namespace to use if not set in GitLab\n")
+		fmt.Fprintf(os.Stderr, "  -namespace, -n string\n")
+		fmt.Fprintf(os.Stderr, "        Helm namespace for deployment (e.g. production, staging, test)\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -n staging\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -63,6 +63,10 @@ func main() {
 
 	if mavenCachePath == "" {
 		log.Fatal("Error: -maven-cache-path parameter is required\n\nUse -h for help")
+	}
+
+	if helmNamespace == "" {
+		log.Fatal("Error: -namespace parameter is required\n\nUse -h for help")
 	}
 
 	// Parse version as integer
@@ -122,9 +126,7 @@ func main() {
 	fmt.Printf("Directory: %s\n", directory)
 	fmt.Printf("Version: %d\n", version)
 	fmt.Printf("Maven Cache Path: %s\n", mavenCachePath)
-	if helmNamespace != "" {
-		fmt.Printf("Namespace: %s\n", helmNamespace)
-	}
+	fmt.Printf("Namespace: %s\n", helmNamespace)
 	fmt.Printf("Services: %d\n", len(services))
 	fmt.Println("================================\n")
 
