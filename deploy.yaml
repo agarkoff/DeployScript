@@ -1,0 +1,50 @@
+# Deploy configuration with grouped services
+
+# Task tracking system URL prefix (e.g., https://jira.company.com/browse/)
+task_url_prefix: https://srv-ecp-jira-01.bft.local/browse/
+
+# Sequential services (executed one by one)
+sequential:
+  - name: proezd-common
+    directory: proezd-common
+    gitlab_project: ecp/proezd/proezd-common
+
+  - name: proezd-api
+    directory: proezd-api
+    gitlab_project: ecp/proezd/proezd-api
+
+  - name: proezd-rpu-adapter
+    directory: proezd-rpu-adapter
+    gitlab_project: ecp/proezd/proezd-rpu-adapter
+
+  - name: proezd-printform
+    directory: proezd-printform
+    gitlab_project: ecp/proezd/proezd-printform
+
+# Grouped services (executed in parallel within each group)
+groups:
+  # Backend services group
+  bo:
+    - name: proezd-claim-bo
+      directory: proezd-claim-bo
+      gitlab_project: ecp/proezd/proezd-claim-bo
+
+    - name: proezd-contract-bo
+      directory: proezd-contract-bo
+      gitlab_project: ecp/proezd/proezd-contract-bo
+
+    - name: proezd-document-bo
+      directory: proezd-document-bo
+      gitlab_project: ecp/proezd/proezd-document-bo
+
+    - name: proezd-camunda
+      directory: proezd-camunda
+      gitlab_project: ecp/proezd/proezd-camunda
+
+    - name: proezd-graphql-mesh-java
+      directory: proezd-graphql-mesh-java
+      gitlab_project: ecp/proezd/proezd-graphql-mesh-java
+
+    - name: proezd-n2o
+      directory: proezd-n2o
+      gitlab_project: ecp/proezd/proezd-n2o
