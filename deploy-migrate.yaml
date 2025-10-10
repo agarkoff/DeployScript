@@ -1,0 +1,16 @@
+# Deploy configuration with grouped services
+
+# Task tracking system URL prefix (e.g., https://jira.company.com/browse/)
+task_url_prefix: https://srv-ecp-jira-01.bft.local/browse/
+
+# Grouped services (executed in parallel within each group)
+groups:
+  # Migrate services group
+  migrate:
+    - name: proezd-claim-migrate
+      directory: proezd-claim-migrate
+      gitlab_project: ecp/proezd/proezd-claim-migrate
+
+    - name: proezd-contract-migrate
+      directory: proezd-contract-migrate
+      gitlab_project: ecp/proezd/proezd-contract-migrate
