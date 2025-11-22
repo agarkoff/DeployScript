@@ -78,17 +78,18 @@ groups:
 ### Базовая команда
 
 ```bash
-./deploy -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production
+./deploy -config deploy.yaml -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production
 ```
 
 ### Короткая форма
 
 ```bash
-./deploy -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging
+./deploy -c deploy.yaml -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging
 ```
 
 ### Параметры командной строки
 
+- `-config`, `-c` (обязательно): Путь к YAML файлу конфигурации (например, `deploy.yaml`, `deploy-migrate.yaml`)
 - `-directory`, `-d` (обязательно): Базовая директория, содержащая все директории сервисов
 - `-version`, `-v` (обязательно): Номер версии для развёртывания (должен быть целым числом)
 - `-maven-cache-path`, `-m` (обязательно): Путь к Maven кешу для очистки (например, `ru/gov/pfr/ecp/apso/proezd`)
@@ -229,17 +230,17 @@ export GITLAB_URI="https://gitlab.company.com"
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxx"
 export GITLAB_URI="https://gitlab.company.com"
 
-# Развёртывание версии 150 в production
-./deploy -directory /home/user/microservices -version 150 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production
+# Развёртывание версии 150 в production с основным конфигом
+./deploy -config deploy.yaml -directory /home/user/microservices -version 150 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production
 
-# Развёртывание версии 151 в staging
-./deploy -d /home/user/microservices -v 151 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging
+# Развёртывание версии 151 в staging с основным конфигом
+./deploy -c deploy.yaml -d /home/user/microservices -v 151 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging
 
-# Развёртывание версии 152 в test
-./deploy -d /home/user/microservices -v 152 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n test
+# Развёртывание версии 152 в test с альтернативным конфигом (только миграции)
+./deploy -c deploy-migrate.yaml -d /home/user/microservices -v 152 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n test
 
 # Использование с другим паттерном свойств
-./deploy -d /home/user/services -v 200 -m com/company/project -p myproject -n production
+./deploy -c deploy.yaml -d /home/user/services -v 200 -m com/company/project -p myproject -n production
 
 # Инструмент выполнит:
 # 1. Проверку чистоты репозиториев

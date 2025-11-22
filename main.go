@@ -24,6 +24,7 @@ func main() {
 		versionStr         string
 		mavenCachePath     string
 		pomPropertyPattern string
+		configFile         string
 	)
 
 	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace for deployment (required)")
@@ -36,10 +37,14 @@ func main() {
 	flag.StringVar(&mavenCachePath, "m", "", "Path to Maven cache for cleanup (shorthand)")
 	flag.StringVar(&pomPropertyPattern, "pom-property-pattern", "", "Pattern to match properties in POM files for version update (required, e.g. proezd)")
 	flag.StringVar(&pomPropertyPattern, "p", "", "Pattern to match properties in POM files (shorthand)")
+	flag.StringVar(&configFile, "config", "", "Path to YAML configuration file (required)")
+	flag.StringVar(&configFile, "c", "", "Path to YAML configuration file (shorthand)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nRequired options:\n")
+		fmt.Fprintf(os.Stderr, "  -config, -c string\n")
+		fmt.Fprintf(os.Stderr, "        Path to YAML configuration file (e.g. deploy.yaml, deploy-migrate.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  -directory, -d string\n")
 		fmt.Fprintf(os.Stderr, "        Base directory for services\n")
 		fmt.Fprintf(os.Stderr, "  -version, -v string\n")
@@ -51,13 +56,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -namespace, -n string\n")
 		fmt.Fprintf(os.Stderr, "        Helm namespace for deployment (e.g. production, staging, test)\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -config deploy.yaml -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -c deploy-migrate.yaml -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging\n", os.Args[0])
 	}
 
 	flag.Parse()
 
 	// Validate required parameters
+	if configFile == "" {
+		log.Fatal("Error: -config parameter is required\n\nUse -h for help")
+	}
+
 	if directory == "" {
 		log.Fatal("Error: -directory parameter is required\n\nUse -h for help")
 	}
@@ -89,8 +98,13 @@ func main() {
 		log.Fatalf("Error: Directory does not exist: %s", directory)
 	}
 
+	// Check if configuration file exists
+	if _, err := os.Stat(configFile); os.IsNotExist(err) {
+		log.Fatalf("Error: Configuration file does not exist: %s", configFile)
+	}
+
 	// Read configuration file
-	cfg, err := config.ReadYAMLConfig("deploy.yaml")
+	cfg, err := config.ReadYAMLConfig(configFile)
 	if err != nil {
 		log.Fatalf("Failed to read config: %v", err)
 	}
@@ -132,6 +146,7 @@ func main() {
 
 	// Print deployment configuration
 	fmt.Println("=== Deployment Configuration ===")
+	fmt.Printf("Config File: %s\n", configFile)
 	fmt.Printf("Directory: %s\n", directory)
 	fmt.Printf("Version: %d\n", version)
 	fmt.Printf("Maven Cache Path: %s\n", mavenCachePath)
