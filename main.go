@@ -200,7 +200,7 @@ func main() {
 
 	// Phase 5: Create release branches for all
 	fmt.Println("\nPhase 5: Creating release branches...")
-	branchName := fmt.Sprintf("release/%d", version)
+	branchName := fmt.Sprintf("release-%d", version)
 	for _, service := range services {
 		fmt.Printf("  Creating branch for service: %s\n", service)
 
@@ -249,7 +249,7 @@ func main() {
 
 	// Phase 7: Create tags for all
 	fmt.Println("\nPhase 7: Creating tags...")
-	tagName := fmt.Sprintf("release/%d.0", version)
+	tagName := fmt.Sprintf("release-%d.0", version)
 	for _, service := range services {
 		fmt.Printf("  Creating tag for service: %s\n", service)
 

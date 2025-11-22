@@ -131,31 +131,59 @@ func PushWithTags(dir string) error {
 }
 
 // DeleteBranchIfExists deletes a branch locally and remotely if it exists
+// It tries both / and - separators to handle old and new branch naming conventions
 func DeleteBranchIfExists(dir string, branchName string) error {
-	// Try to delete local branch (ignore error if it doesn't exist)
-	cmd := exec.Command("git", "branch", "-D", branchName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, branch might not exist
+	// Generate both possible branch names
+	dashName := strings.ReplaceAll(branchName, "/", "-")
+	slashName := strings.ReplaceAll(branchName, "-", "/")
 
-	// Try to delete remote branch (ignore error if it doesn't exist)
-	cmd = exec.Command("git", "push", "origin", "--delete", branchName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, remote branch might not exist
+	branchesToDelete := []string{dashName}
+	if dashName != slashName {
+		branchesToDelete = append(branchesToDelete, slashName)
+	}
+
+	// Try to delete local branches (ignore error if they don't exist)
+	for _, branch := range branchesToDelete {
+		cmd := exec.Command("git", "branch", "-D", branch)
+		cmd.Dir = dir
+		cmd.Run() // Ignore error, branch might not exist
+	}
+
+	// Try to delete remote branches (ignore error if they don't exist)
+	for _, branch := range branchesToDelete {
+		cmd := exec.Command("git", "push", "origin", "--delete", branch)
+		cmd.Dir = dir
+		cmd.Run() // Ignore error, remote branch might not exist
+	}
 
 	return nil
 }
 
 // DeleteTagIfExists deletes a tag locally and remotely if it exists
+// It tries both / and - separators to handle old and new tag naming conventions
 func DeleteTagIfExists(dir string, tagName string) error {
-	// Try to delete local tag (ignore error if it doesn't exist)
-	cmd := exec.Command("git", "tag", "-d", tagName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, tag might not exist
+	// Generate both possible tag names
+	dashName := strings.ReplaceAll(tagName, "/", "-")
+	slashName := strings.ReplaceAll(tagName, "-", "/")
 
-	// Try to delete remote tag (ignore error if it doesn't exist)
-	cmd = exec.Command("git", "push", "origin", ":refs/tags/"+tagName)
-	cmd.Dir = dir
-	cmd.Run() // Ignore error, remote tag might not exist
+	tagsToDelete := []string{dashName}
+	if dashName != slashName {
+		tagsToDelete = append(tagsToDelete, slashName)
+	}
+
+	// Try to delete local tags (ignore error if they don't exist)
+	for _, tag := range tagsToDelete {
+		cmd := exec.Command("git", "tag", "-d", tag)
+		cmd.Dir = dir
+		cmd.Run() // Ignore error, tag might not exist
+	}
+
+	// Try to delete remote tags (ignore error if they don't exist)
+	for _, tag := range tagsToDelete {
+		cmd := exec.Command("git", "push", "origin", ":refs/tags/"+tag)
+		cmd.Dir = dir
+		cmd.Run() // Ignore error, remote tag might not exist
+	}
 
 	return nil
 }
@@ -228,6 +256,41 @@ func colorizeDiffLine(line string) string {
 	}
 }
 
+// findRefWithBothSeparators tries to find a branch or tag with either / or - separator
+// It returns the found ref name and whether it was found
+func findRefWithBothSeparators(dir string, refType string, pattern string) (string, bool) {
+	// Determine which separators to try based on the pattern
+	var namesToTry []string
+
+	if strings.Contains(pattern, "/") {
+		// Pattern has /, try - version first (new format), then original
+		dashName := strings.ReplaceAll(pattern, "/", "-")
+		namesToTry = []string{dashName, pattern}
+	} else if strings.Contains(pattern, "-") {
+		// Pattern has -, try it first, then / version (old format)
+		slashName := strings.ReplaceAll(pattern, "-", "/")
+		namesToTry = []string{pattern, slashName}
+	} else {
+		// No separator in pattern, just try as-is
+		namesToTry = []string{pattern}
+	}
+
+	for _, name := range namesToTry {
+		var checkCmd *exec.Cmd
+		if refType == "branch" {
+			checkCmd = exec.Command("git", "rev-parse", "--verify", fmt.Sprintf("origin/%s", name))
+		} else {
+			checkCmd = exec.Command("git", "rev-parse", "--verify", name)
+		}
+		checkCmd.Dir = dir
+		if err := checkCmd.Run(); err == nil {
+			return name, true
+		}
+	}
+
+	return "", false
+}
+
 // GetCurrentBranch returns the current branch name
 func GetCurrentBranch(dir string) (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
@@ -258,18 +321,15 @@ func GetPreviousReleaseBranch(dir string, currentVersion int) (string, error) {
 		return "", fmt.Errorf("no previous version possible (current version is %d)", currentVersion)
 	}
 
-	previousBranch := fmt.Sprintf("release/%d", previousVersion)
-
-	// Check if branch exists
-	cmd := exec.Command("git", "rev-parse", "--verify", fmt.Sprintf("origin/%s", previousBranch))
-	cmd.Dir = dir
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("previous release branch %s not found", previousBranch)
+	// Try to find branch with both separators
+	pattern := fmt.Sprintf("release/%d", previousVersion)
+	foundBranch, found := findRefWithBothSeparators(dir, "branch", pattern)
+	if !found {
+		return "", fmt.Errorf("previous release branch release/%d or release-%d not found", previousVersion, previousVersion)
 	}
 
-	fmt.Printf("Found previous release branch: %s\n", previousBranch)
-	return previousBranch, nil
+	fmt.Printf("Found previous release branch: %s\n", foundBranch)
+	return foundBranch, nil
 }
 
 // GetBranchStartCommit finds the commit where a branch was created from its parent
@@ -286,25 +346,55 @@ func GetBranchStartCommit(dir string, branchName string) (string, error) {
 
 // GetLastTagInBranch finds the last tag in a specific branch
 func GetLastTagInBranch(dir string, branchName string) (string, error) {
-	// Get all tags reachable from the branch
+	// Get all tags reachable from the branch - try both separators
+	var allTags []string
+
+	// Try with release/* pattern (old format with /)
 	cmd := exec.Command("git", "tag", "--merged", fmt.Sprintf("origin/%s", branchName), "release/*")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to list tags in branch: %v: %s", err, output)
+	if err == nil && len(output) > 0 {
+		tags := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, tag := range tags {
+			if tag != "" {
+				allTags = append(allTags, tag)
+			}
+		}
 	}
 
-	tags := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(tags) == 0 || (len(tags) == 1 && tags[0] == "") {
+	// Try with release-* pattern (new format with -)
+	cmd = exec.Command("git", "tag", "--merged", fmt.Sprintf("origin/%s", branchName), "release-*")
+	cmd.Dir = dir
+	output, err = cmd.CombinedOutput()
+	if err == nil && len(output) > 0 {
+		tags := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, tag := range tags {
+			if tag != "" && !contains(allTags, tag) {
+				allTags = append(allTags, tag)
+			}
+		}
+	}
+
+	if len(allTags) == 0 {
 		return "", fmt.Errorf("no tags found in branch %s", branchName)
 	}
 
 	// Sort tags to find the latest one
-	sort.Strings(tags)
-	lastTag := tags[len(tags)-1]
+	sort.Strings(allTags)
+	lastTag := allTags[len(allTags)-1]
 
 	fmt.Printf("Found last tag in branch %s: %s\n", branchName, lastTag)
 	return lastTag, nil
+}
+
+// contains checks if a string slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // CommitInfo represents information about a commit
