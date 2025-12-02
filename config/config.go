@@ -10,6 +10,7 @@ type Service struct {
 	Name          string `yaml:"name"`
 	Directory     string `yaml:"directory"`
 	GitlabProject string `yaml:"gitlab_project"`
+	IsMesh        bool   `yaml:"is_mesh"`
 }
 
 // Config represents the deploy configuration with new structure

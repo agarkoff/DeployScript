@@ -115,6 +115,7 @@ func main() {
 	// Build service directories map
 	serviceDirs := make(map[string]string)
 	serviceConfigs := make(map[string]gitlab.Service)
+	meshServices := make(map[string]bool)
 
 	for _, svcMeta := range allServices {
 		service := svcMeta.Service
@@ -126,6 +127,7 @@ func main() {
 		}
 
 		serviceDirs[service.Name] = serviceDir
+		meshServices[service.Name] = service.IsMesh
 
 		// Convert to gitlab.Service
 		gitlabService := gitlab.Service{
@@ -292,7 +294,16 @@ func main() {
 		fmt.Printf("\nBuilding service: %s\n", service)
 		fmt.Println(strings.Repeat("-", 60))
 
-		if err := maven.BuildService(serviceDirs[service]); err != nil {
+		// Check if this is a mesh service
+		var err error
+		if meshServices[service] {
+			fmt.Printf("  This is a GraphQL Mesh service, using special build sequence...\n")
+			err = maven.BuildMeshService(serviceDirs[service])
+		} else {
+			err = maven.BuildService(serviceDirs[service])
+		}
+
+		if err != nil {
 			log.Fatalf("Build failed for service %s: %v", service, err)
 		}
 

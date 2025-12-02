@@ -258,3 +258,63 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 	// Write file back
 	return ioutil.WriteFile(filename, []byte(content), 0644)
 }
+
+// BuildMeshService builds a mesh service using Maven with special sequence:
+// 1. First builds graphql-mesh-resources submodule
+// 2. Then builds the main project
+func BuildMeshService(serviceDir string) error {
+	// Step 1: Build graphql-mesh-resources first
+	meshResourcesDir := filepath.Join(serviceDir, "graphql-mesh-resources")
+
+	// Check if graphql-mesh-resources directory exists
+	if _, err := os.Stat(meshResourcesDir); os.IsNotExist(err) {
+		return fmt.Errorf("graphql-mesh-resources directory not found in %s", serviceDir)
+	}
+
+	fmt.Printf("  Building graphql-mesh-resources first...\n")
+
+	// Create Maven command for mesh resources
+	cmd := exec.Command("mvn", "clean", "install")
+	cmd.Dir = meshResourcesDir
+
+	// Capture and display output
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
+	cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+	// Run the build for mesh resources
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("\n\033[31mBuild failed for graphql-mesh-resources!\033[0m\n")
+		if stderr.Len() > 0 {
+			fmt.Printf("Error output:\n%s\n", stderr.String())
+		}
+		return fmt.Errorf("mvn clean install failed in graphql-mesh-resources: %v", err)
+	}
+
+	fmt.Printf("  graphql-mesh-resources built successfully\n")
+
+	// Step 2: Build the main project
+	fmt.Printf("  Building main project...\n")
+
+	// Create Maven command for main project
+	cmd = exec.Command("mvn", "clean", "install")
+	cmd.Dir = serviceDir
+
+	// Reset buffers
+	stdout.Reset()
+	stderr.Reset()
+	cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
+	cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+	// Run the main build
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("\n\033[31mBuild failed for main project!\033[0m\n")
+		if stderr.Len() > 0 {
+			fmt.Printf("Error output:\n%s\n", stderr.String())
+		}
+		return fmt.Errorf("mvn clean install failed in main project: %v", err)
+	}
+
+	return nil
+}
