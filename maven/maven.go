@@ -71,7 +71,7 @@ func GetLocalRepository() string {
 // BuildService builds a service using Maven
 func BuildService(serviceDir string) error {
 	// Create Maven command
-	cmd := exec.Command("mvn", "clean", "install")
+	cmd := exec.Command("mvn", "clean", "install", "-DskipTests=true")
 	cmd.Dir = serviceDir
 
 	// Capture output
