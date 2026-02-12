@@ -1,0 +1,84 @@
+# Deploy configuration with grouped services
+
+# Task tracking system URL prefix (e.g., https://jira.company.com/browse/)
+task_url_prefix: https://srv-ecp-jira-01.bft.local/browse/
+
+# Sequential services (executed one by one)
+sequential:
+
+  - name: skl-act-aggregate
+    directory: skl-act-aggregate
+    gitlab_project: ecp/skl/skl-act-aggregate
+    update_parent_version: true
+
+  - name: skl-application-aggregate
+    directory: skl-application-aggregate
+    gitlab_project: ecp/skl/skl-application-aggregate
+    update_parent_version: true
+
+  - name: skl-contract-aggregate
+    directory: skl-contract-aggregate
+    gitlab_project: ecp/skl/skl-contract-aggregate
+    update_parent_version: true
+
+  - name: skl-decision-aggregate
+    directory: skl-decision-aggregate
+    gitlab_project: ecp/skl/skl-decision-aggregate
+    update_parent_version: true
+
+  - name: skl-statement-aggregate
+    directory: skl-statement-aggregate
+    gitlab_project: ecp/skl/skl-statement-aggregate
+    update_parent_version: true
+
+  - name: skl-common
+    directory: skl-common
+    gitlab_project: ecp/skl/skl-common
+    update_parent_version: true
+
+# Grouped services (executed in parallel within each group)
+groups:
+  # Backend services group
+  bo:
+    - name: skl-referral-paperwork-service
+      directory: skl-referral-paperwork-service
+      gitlab_project: ecp/proezd/skl-referral-paperwork-service
+      update_parent_version: true
+
+    - name: skl-decision-bo
+      directory: skl-decision-bo
+      gitlab_project: ecp/proezd/skl-decision-bo
+      update_parent_version: true
+
+    - name: skl-statement-bo
+      directory: skl-statement-bo
+      gitlab_project: ecp/proezd/skl-statement-bo
+      update_parent_version: true
+
+    - name: skl-application-bo
+      directory: skl-application-bo
+      gitlab_project: ecp/proezd/skl-application-bo
+      update_parent_version: true
+
+    - name: skl-contract-bo
+      directory: skl-contract-bo
+      gitlab_project: ecp/proezd/skl-contract-bo
+      update_parent_version: true
+
+    - name: skl-act-bo
+      directory: skl-act-bo
+      gitlab_project: ecp/proezd/skl-act-bo
+      update_parent_version: true
+
+#    - name: skl-contract-evs-service
+#      directory: skl-contract-evs-service
+#      gitlab_project: ecp/proezd/skl-contract-evs-service
+
+    - name: skl-camunda-service
+      directory: skl-camunda-service
+      gitlab_project: ecp/proezd/skl-camunda-service
+      update_parent_version: true
+
+    - name: skl
+      directory: skl
+      gitlab_project: ecp/proezd/skl
