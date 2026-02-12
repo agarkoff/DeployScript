@@ -100,7 +100,7 @@ func BuildService(serviceDir string) error {
 }
 
 // UpdatePomFiles updates all pom.xml files in the directory with the new version
-func UpdatePomFiles(dir string, version string, propertyPattern string) error {
+func UpdatePomFiles(dir string, version string, propertyPattern string, updateParentVersion bool) error {
 	// Find all pom.xml files
 	var pomFiles []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -121,7 +121,7 @@ func UpdatePomFiles(dir string, version string, propertyPattern string) error {
 		// Check if this is a root pom (in the service's top directory)
 		isRootPom := filepath.Dir(pomFile) == dir
 
-		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern); err != nil {
+		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern, updateParentVersion); err != nil {
 			return fmt.Errorf("failed to update %s: %v", pomFile, err)
 		}
 	}
@@ -130,7 +130,7 @@ func UpdatePomFiles(dir string, version string, propertyPattern string) error {
 }
 
 // UpdatePomFile updates a single pom.xml file with the new version
-func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string) error {
+func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string, updateParentVersion bool) error {
 	// Read file
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -206,8 +206,8 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 					rootVersionUpdated = true
 				}
 
-				// CASE 2a: Submodule POM - update version inside parent
-				if !isRootPom && insideParent && !parentVersionUpdated {
+				// CASE 2a: Update version inside parent (both root and submodule POMs)
+				if insideParent && !parentVersionUpdated && updateParentVersion {
 					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
 						"<version>"+newVersion+"</version>", 1)
 					lines[i] = newLine
