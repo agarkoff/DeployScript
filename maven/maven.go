@@ -196,6 +196,11 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 			if start > 8 && end > start {
 				currentVersion := trimmed[start:end]
 
+				// Skip replacement if version contains "revision" (e.g., ${revision})
+				if strings.Contains(currentVersion, "revision") {
+					continue
+				}
+
 				// CASE 1: Root POM - update version that's direct child of project
 				if isRootPom && insideProject && !insideParent && !insideProperties &&
 					!rootVersionUpdated && tagsAfterProject <= 4 {
