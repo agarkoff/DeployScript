@@ -21,6 +21,14 @@ sequential:
     directory: proezd-printform
     gitlab_project: ecp/proezd/proezd-printform
 
+  - name: proezd-tech
+    directory: proezd-tech
+    gitlab_project: ecp/proezd/proezd-tech
+
+  - name: proezd-graphql-config
+    directory: proezd-graphql-config
+    gitlab_project: ecp/proezd/proezd-graphql-config
+
 # Grouped services (executed in parallel within each group)
 groups:
   # Backend services group
