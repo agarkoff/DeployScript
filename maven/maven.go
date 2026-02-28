@@ -211,8 +211,10 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 					rootVersionUpdated = true
 				}
 
-				// CASE 2a: Update version inside parent (both root and submodule POMs)
-				if insideParent && !parentVersionUpdated && updateParentVersion {
+				// CASE 2a: Update version inside parent
+				// For submodule POMs - always update parent version (it references the root POM)
+				// For root POMs - only update if updateParentVersion flag is set
+				if insideParent && !parentVersionUpdated && (!isRootPom || updateParentVersion) {
 					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
 						"<version>"+newVersion+"</version>", 1)
 					lines[i] = newLine
