@@ -26,18 +26,20 @@ func main() {
 		pomPropertyPattern string
 		configFile         string
 		runJob             string
+		continueMode       bool
 	)
 
 	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace for deployment (required)")
 	flag.StringVar(&helmNamespace, "n", "", "Helm namespace for deployment (shorthand)")
 	flag.StringVar(&runJob, "run-job", "", "Name of manual/delayed job to trigger after deploy service (optional)")
-	flag.StringVar(&directory, "directory", "", "Base directory for services (required)")
+	flag.BoolVar(&continueMode, "continue", false, "Continue deployment: skip build phases, re-run only failed/missing pipelines")
+	flag.StringVar(&directory, "directory", "", "Base directory for services (required unless --continue)")
 	flag.StringVar(&directory, "d", "", "Base directory for services (shorthand)")
 	flag.StringVar(&versionStr, "version", "", "Version number to deploy (required)")
 	flag.StringVar(&versionStr, "v", "", "Version number to deploy (shorthand)")
-	flag.StringVar(&mavenCachePath, "maven-cache-path", "", "Path to Maven cache for cleanup (required, e.g. ru/gov/pfr/ecp/apso/proezd)")
+	flag.StringVar(&mavenCachePath, "maven-cache-path", "", "Path to Maven cache for cleanup (required unless --continue)")
 	flag.StringVar(&mavenCachePath, "m", "", "Path to Maven cache for cleanup (shorthand)")
-	flag.StringVar(&pomPropertyPattern, "pom-property-pattern", "", "Pattern to match properties in POM files for version update (required, e.g. proezd)")
+	flag.StringVar(&pomPropertyPattern, "pom-property-pattern", "", "Pattern to match properties in POM files (required unless --continue)")
 	flag.StringVar(&pomPropertyPattern, "p", "", "Pattern to match properties in POM files (shorthand)")
 	flag.StringVar(&configFile, "config", "", "Path to YAML configuration file (required)")
 	flag.StringVar(&configFile, "c", "", "Path to YAML configuration file (shorthand)")
@@ -60,9 +62,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nOptional:\n")
 		fmt.Fprintf(os.Stderr, "  -run-job string\n")
 		fmt.Fprintf(os.Stderr, "        Name of manual/delayed job to trigger after deploy service (e.g. migrate)\n")
+		fmt.Fprintf(os.Stderr, "  -continue\n")
+		fmt.Fprintf(os.Stderr, "        Continue deployment: skip build phases, re-run only failed/missing pipelines\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  %s -config deploy.yaml -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -c deploy.yaml -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n production --run-job migrate\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -c deploy.yaml -v 123 -n production --continue\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -72,35 +76,30 @@ func main() {
 		log.Fatal("Error: -config parameter is required\n\nUse -h for help")
 	}
 
-	if directory == "" {
-		log.Fatal("Error: -directory parameter is required\n\nUse -h for help")
-	}
-
 	if versionStr == "" {
 		log.Fatal("Error: -version parameter is required\n\nUse -h for help")
-	}
-
-	if mavenCachePath == "" {
-		log.Fatal("Error: -maven-cache-path parameter is required\n\nUse -h for help")
-	}
-
-	if pomPropertyPattern == "" {
-		log.Fatal("Error: -pom-property-pattern parameter is required\n\nUse -h for help")
 	}
 
 	if helmNamespace == "" {
 		log.Fatal("Error: -namespace parameter is required\n\nUse -h for help")
 	}
 
+	if !continueMode {
+		if directory == "" {
+			log.Fatal("Error: -directory parameter is required\n\nUse -h for help")
+		}
+		if mavenCachePath == "" {
+			log.Fatal("Error: -maven-cache-path parameter is required\n\nUse -h for help")
+		}
+		if pomPropertyPattern == "" {
+			log.Fatal("Error: -pom-property-pattern parameter is required\n\nUse -h for help")
+		}
+	}
+
 	// Parse version as integer
 	version, err := strconv.Atoi(versionStr)
 	if err != nil {
 		log.Fatalf("Error: Version must be an integer, got '%s': %v", versionStr, err)
-	}
-
-	// Check if directory exists
-	if _, err := os.Stat(directory); os.IsNotExist(err) {
-		log.Fatalf("Error: Directory does not exist: %s", directory)
 	}
 
 	// Check if configuration file exists
@@ -112,6 +111,36 @@ func main() {
 	cfg, err := config.ReadYAMLConfig(configFile)
 	if err != nil {
 		log.Fatalf("Failed to read config: %v", err)
+	}
+
+	tagName := fmt.Sprintf("release-%d.0", version)
+
+	if continueMode {
+		// Continue mode: skip build phases, re-run failed/missing pipelines
+		fmt.Println("=== Continue Deployment ===")
+		fmt.Printf("Config File: %s\n", configFile)
+		fmt.Printf("Version: %d\n", version)
+		fmt.Printf("Tag: %s\n", tagName)
+		fmt.Printf("Namespace: %s\n", helmNamespace)
+		if runJob != "" {
+			fmt.Printf("Run Job: %s\n", runJob)
+		}
+		fmt.Println("===========================\n")
+
+		fmt.Println("Checking pipeline statuses and re-running failed/missing pipelines...")
+
+		if err := gitlab.ContinuePipelinesFromConfig(cfg, tagName, helmNamespace, runJob); err != nil {
+			log.Fatalf("Failed to continue deployment: %v", err)
+		}
+
+		fmt.Println("\nContinue deployment completed successfully!")
+		return
+	}
+
+	// Full deployment mode
+	// Check if directory exists
+	if _, err := os.Stat(directory); os.IsNotExist(err) {
+		log.Fatalf("Error: Directory does not exist: %s", directory)
 	}
 
 	// Get all services with metadata
@@ -284,7 +313,6 @@ func main() {
 
 	// Phase 7: Create tags for all
 	fmt.Println("\nPhase 7: Creating tags...")
-	tagName := fmt.Sprintf("release-%d.0", version)
 	for _, service := range services {
 		fmt.Printf("  Creating tag for service: %s\n", service)
 
