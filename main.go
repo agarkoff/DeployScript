@@ -116,7 +116,6 @@ func main() {
 	serviceDirs := make(map[string]string)
 	serviceConfigs := make(map[string]gitlab.Service)
 	meshServices := make(map[string]bool)
-	updateParentVersion := make(map[string]bool)
 
 	for _, svcMeta := range allServices {
 		service := svcMeta.Service
@@ -129,7 +128,6 @@ func main() {
 
 		serviceDirs[service.Name] = serviceDir
 		meshServices[service.Name] = service.IsMesh
-		updateParentVersion[service.Name] = service.UpdateParentVersion
 
 		// Convert to gitlab.Service
 		gitlabService := gitlab.Service{
@@ -222,7 +220,7 @@ func main() {
 
 	for _, service := range services {
 		fmt.Printf("  Updating service: %s\n", service)
-		if err := maven.UpdatePomFiles(serviceDirs[service], versionString, pomPropertyPattern, updateParentVersion[service], excludeArtifacts, cfg.SkipProperties); err != nil {
+		if err := maven.UpdatePomFiles(serviceDirs[service], versionString, pomPropertyPattern, excludeArtifacts, cfg.SkipProperties); err != nil {
 			log.Fatalf("Failed to update pom files in %s: %v", service, err)
 		}
 	}

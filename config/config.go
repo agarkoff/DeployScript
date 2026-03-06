@@ -7,11 +7,10 @@ import (
 
 // Service represents a service configuration
 type Service struct {
-	Name                string `yaml:"name"`
-	Directory           string `yaml:"directory"`
-	GitlabProject       string `yaml:"gitlab_project"`
-	IsMesh              bool   `yaml:"is_mesh"`
-	UpdateParentVersion bool   `yaml:"update_parent_version"`
+	Name          string `yaml:"name"`
+	Directory     string `yaml:"directory"`
+	GitlabProject string `yaml:"gitlab_project"`
+	IsMesh        bool   `yaml:"is_mesh"`
 }
 
 // ArtifactExclusion defines an artifact whose version should not be updated anywhere

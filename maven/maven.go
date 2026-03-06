@@ -106,7 +106,7 @@ type ArtifactExclusion struct {
 }
 
 // UpdatePomFiles updates all pom.xml files in the directory with the new version
-func UpdatePomFiles(dir string, version string, propertyPattern string, updateParentVersion bool, excludeArtifacts []ArtifactExclusion, skipProperties []string) error {
+func UpdatePomFiles(dir string, version string, propertyPattern string, excludeArtifacts []ArtifactExclusion, skipProperties []string) error {
 	// Find all pom.xml files
 	var pomFiles []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -127,7 +127,7 @@ func UpdatePomFiles(dir string, version string, propertyPattern string, updatePa
 		// Check if this is a root pom (in the service's top directory)
 		isRootPom := filepath.Dir(pomFile) == dir
 
-		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern, updateParentVersion, excludeArtifacts, skipProperties); err != nil {
+		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern, excludeArtifacts, skipProperties); err != nil {
 			return fmt.Errorf("failed to update %s: %v", pomFile, err)
 		}
 	}
@@ -208,7 +208,7 @@ func isPropertySkipped(propertyName string, skipProperties []string) bool {
 }
 
 // UpdatePomFile updates a single pom.xml file with the new version
-func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string, updateParentVersion bool, excludeArtifacts []ArtifactExclusion, skipProperties []string) error {
+func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string, excludeArtifacts []ArtifactExclusion, skipProperties []string) error {
 	// Read file
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -320,11 +320,9 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 					rootVersionUpdated = true
 				}
 
-				// CASE 2a: Update version inside parent
-				// For submodule POMs - always update parent version (it references the root POM)
-				// For root POMs - only update if updateParentVersion flag is set
+				// CASE 2a: Update version inside parent (only for submodule POMs)
 				// Skip if parent matches an exclusion rule
-				if insideParent && !parentVersionUpdated && (!isRootPom || updateParentVersion) {
+				if insideParent && !parentVersionUpdated && !isRootPom {
 					if !isArtifactExcluded(parentGroupID, parentArtifactID, excludeArtifacts) {
 						newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
 							"<version>"+newVersion+"</version>", 1)
