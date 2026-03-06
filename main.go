@@ -25,10 +25,12 @@ func main() {
 		mavenCachePath     string
 		pomPropertyPattern string
 		configFile         string
+		runJob             string
 	)
 
 	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace for deployment (required)")
 	flag.StringVar(&helmNamespace, "n", "", "Helm namespace for deployment (shorthand)")
+	flag.StringVar(&runJob, "run-job", "", "Name of manual/delayed job to trigger after deploy service (optional)")
 	flag.StringVar(&directory, "directory", "", "Base directory for services (required)")
 	flag.StringVar(&directory, "d", "", "Base directory for services (shorthand)")
 	flag.StringVar(&versionStr, "version", "", "Version number to deploy (required)")
@@ -55,9 +57,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "        Pattern to match properties in POM files for version update (e.g. proezd)\n")
 		fmt.Fprintf(os.Stderr, "  -namespace, -n string\n")
 		fmt.Fprintf(os.Stderr, "        Helm namespace for deployment (e.g. production, staging, test)\n")
+		fmt.Fprintf(os.Stderr, "\nOptional:\n")
+		fmt.Fprintf(os.Stderr, "  -run-job string\n")
+		fmt.Fprintf(os.Stderr, "        Name of manual/delayed job to trigger after deploy service (e.g. migrate)\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  %s -config deploy.yaml -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -c deploy-migrate.yaml -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n staging\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -c deploy.yaml -d /path/to/services -v 123 -m ru/gov/pfr/ecp/apso/proezd -p proezd -n production --run-job migrate\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -154,6 +159,9 @@ func main() {
 	fmt.Printf("Maven Cache Path: %s\n", mavenCachePath)
 	fmt.Printf("POM Property Pattern: %s\n", pomPropertyPattern)
 	fmt.Printf("Namespace: %s\n", helmNamespace)
+	if runJob != "" {
+		fmt.Printf("Run Job: %s\n", runJob)
+	}
 	fmt.Printf("Services: %d\n", len(services))
 	fmt.Println("================================\n")
 
@@ -338,14 +346,7 @@ func main() {
 	// Phase 10: Create GitLab pipelines
 	fmt.Println("\nPhase 10: Creating GitLab pipelines...")
 
-	// Convert service configs to slice for GitLab
-	gitlabServices := make([]gitlab.Service, 0, len(serviceConfigs))
-	for _, svc := range serviceConfigs {
-		gitlabServices = append(gitlabServices, svc)
-	}
-
-	// Use tag name instead of branch name for pipelines
-	if err := gitlab.CreatePipelinesFromConfig(cfg, tagName, helmNamespace); err != nil {
+	if err := gitlab.CreatePipelinesFromConfig(cfg, tagName, helmNamespace, runJob); err != nil {
 		log.Fatalf("Failed to create GitLab pipelines: %v", err)
 	}
 

@@ -61,7 +61,7 @@ const (
 )
 
 // CreatePipelinesFromConfig creates GitLab pipelines using the new config structure
-func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace string) error {
+func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace string, runJob string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
 		return fmt.Errorf("GITLAB_TOKEN environment variable is not set")
@@ -82,7 +82,7 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace str
 		}
 
 		// Wait for pipeline to complete
-		if err := waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID); err != nil {
+		if err := waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID, runJob); err != nil {
 			return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
 		}
 	}
@@ -106,7 +106,7 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace str
 				}
 
 				// Wait for pipeline to complete
-				if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID); err != nil {
+				if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID, runJob); err != nil {
 					errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
 					return
 				}
@@ -164,7 +164,7 @@ func CreatePipelines(services []Service, ref string, helmNamespace string) error
 		}
 
 		// Wait for pipeline to complete
-		if err := waitForPipeline(service, gitlabURI, gitlabToken, pipelineID); err != nil {
+		if err := waitForPipeline(service, gitlabURI, gitlabToken, pipelineID, ""); err != nil {
 			return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
 		}
 	}
@@ -188,7 +188,7 @@ func CreatePipelines(services []Service, ref string, helmNamespace string) error
 				}
 
 				// Wait for pipeline to complete
-				if err := waitForPipeline(svc, gitlabURI, gitlabToken, pipelineID); err != nil {
+				if err := waitForPipeline(svc, gitlabURI, gitlabToken, pipelineID, ""); err != nil {
 					errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
 					return
 				}
@@ -221,14 +221,14 @@ func createPipelineForService(service config.Service, gitlabURI, gitlabToken, re
 }
 
 // waitForPipelineForService waits for a pipeline for config.Service
-func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int) error {
+func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int, runJob string) error {
 	// Convert to gitlab.Service for compatibility
 	gitlabService := Service{
 		Name:          service.Name,
 		Directory:     service.Directory,
 		GitlabProject: service.GitlabProject,
 	}
-	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID)
+	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID, runJob)
 }
 
 // createPipeline creates a single pipeline
@@ -325,7 +325,7 @@ func (e *terminalError) Error() string {
 // If the main pipeline has a "deploy service" bridge job, it waits for the
 // "deploy helm" job in the downstream pipeline to succeed.
 // Otherwise, it waits for the main pipeline to succeed.
-func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int) error {
+func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int, runJob string) error {
 	projectPath := url.QueryEscape(service.GitlabProject)
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -338,12 +338,20 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 	var firstErrorTime time.Time
 
 	downstreamPipelineID := 0
+	runJobTriggered := false
 
 	for {
 		var result pollResult
 		var err error
 
 		if downstreamPipelineID > 0 {
+			// After finding downstream pipeline, trigger the manual job if requested
+			if runJob != "" && !runJobTriggered {
+				if triggerErr := triggerManualJob(client, gitlabURI, gitlabToken, projectPath, pipelineID, runJob, service.Name); triggerErr != nil {
+					fmt.Printf("  Warning: failed to trigger job \"%s\" for %s: %v\n", runJob, service.Name, triggerErr)
+				}
+				runJobTriggered = true
+			}
 			result, err = pollDeployHelmJob(client, gitlabURI, gitlabToken, projectPath, downstreamPipelineID, service.Name)
 		} else {
 			result, downstreamPipelineID, err = pollMainPipeline(client, gitlabURI, gitlabToken, projectPath, pipelineID, service.Name)
@@ -376,6 +384,46 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 
 		<-ticker.C
 	}
+}
+
+// triggerManualJob finds and triggers a manual or delayed job in the pipeline
+func triggerManualJob(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, jobName string, serviceName string) error {
+	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs", gitlabURI, projectPath, pipelineID)
+	body, err := gitlabGet(client, jobsURL, gitlabToken)
+	if err != nil {
+		return fmt.Errorf("failed to get jobs: %v", err)
+	}
+
+	var jobs []JobResponse
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return fmt.Errorf("failed to parse jobs: %v", err)
+	}
+
+	for _, job := range jobs {
+		if job.Name == jobName && (job.Status == "manual" || job.Status == "scheduled") {
+			playURL := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%d/play", gitlabURI, projectPath, job.ID)
+			req, err := http.NewRequest("POST", playURL, nil)
+			if err != nil {
+				return fmt.Errorf("failed to create play request: %v", err)
+			}
+			req.Header.Set("PRIVATE-TOKEN", gitlabToken)
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return fmt.Errorf("failed to trigger job: %v", err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+				return fmt.Errorf("failed to trigger job, status code: %d", resp.StatusCode)
+			}
+
+			fmt.Printf("  %s✓ Triggered job \"%s\" for %s%s\n", colorGreen, jobName, serviceName, colorReset)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("job \"%s\" not found with manual/scheduled status", jobName)
 }
 
 // pollMainPipeline checks the main pipeline status and looks for a "deploy service" bridge.
