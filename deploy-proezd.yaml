@@ -53,8 +53,8 @@ groups:
       directory: proezd-n2o
       gitlab_project: ecp/proezd/proezd-n2o
 
-#  mesh:
-#    - name: proezd-graphql-mesh-java
-#      directory: proezd-graphql-mesh-java
-#      gitlab_project: ecp/proezd/proezd-graphql-mesh-java
-#      is_mesh: true
+  mesh:
+    - name: proezd-graphql-mesh-java
+      directory: proezd-graphql-mesh-java
+      gitlab_project: ecp/proezd/proezd-graphql-mesh-java
+      is_mesh: true
