@@ -284,6 +284,8 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 
 	startTime := time.Now()
 	maxDuration := 60 * time.Minute
+	maxRetryDuration := 60 * time.Minute
+	var firstErrorTime time.Time
 
 	for {
 		req, err := http.NewRequest("GET", apiURL, nil)
@@ -295,19 +297,46 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return err
+			if firstErrorTime.IsZero() {
+				firstErrorTime = time.Now()
+			}
+			if time.Since(firstErrorTime) > maxRetryDuration {
+				return fmt.Errorf("failed to check pipeline status for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
+			}
+			fmt.Printf("  Warning: failed to check pipeline for %s: %v\n", service.Name, err)
+			<-ticker.C
+			continue
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return err
+			if firstErrorTime.IsZero() {
+				firstErrorTime = time.Now()
+			}
+			if time.Since(firstErrorTime) > maxRetryDuration {
+				return fmt.Errorf("failed to read pipeline response for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
+			}
+			fmt.Printf("  Warning: failed to read response for %s: %v\n", service.Name, err)
+			<-ticker.C
+			continue
 		}
 
 		var pipelineResp PipelineResponse
 		if err := json.Unmarshal(body, &pipelineResp); err != nil {
-			return err
+			if firstErrorTime.IsZero() {
+				firstErrorTime = time.Now()
+			}
+			if time.Since(firstErrorTime) > maxRetryDuration {
+				return fmt.Errorf("failed to parse pipeline response for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
+			}
+			fmt.Printf("  Warning: failed to parse response for %s: %v\n", service.Name, err)
+			<-ticker.C
+			continue
 		}
+
+		// Reset error tracking on successful request
+		firstErrorTime = time.Time{}
 
 		switch pipelineResp.Status {
 		case "success":
