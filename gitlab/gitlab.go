@@ -29,6 +29,21 @@ type PipelineResponse struct {
 	WebURL string `json:"web_url"`
 }
 
+// BridgeResponse represents a GitLab bridge job (trigger for downstream pipeline)
+type BridgeResponse struct {
+	ID                 int               `json:"id"`
+	Name               string            `json:"name"`
+	Status             string            `json:"status"`
+	DownstreamPipeline *PipelineResponse `json:"downstream_pipeline"`
+}
+
+// JobResponse represents a GitLab pipeline job
+type JobResponse struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
 // ProjectVariable represents a GitLab project variable
 type ProjectVariable struct {
 	Key              string `json:"key"`
@@ -271,14 +286,49 @@ func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace 
 	return pipelineResp.ID, nil
 }
 
-// waitForPipeline waits for a pipeline to complete
+// gitlabGet performs a GET request to GitLab API with retry logic
+func gitlabGet(client *http.Client, url, token string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return ioutil.ReadAll(resp.Body)
+}
+
+// pollResult represents the outcome of a single polling iteration
+type pollResult int
+
+const (
+	pollContinue pollResult = iota // keep polling
+	pollSuccess                    // done successfully
+	pollFailed                     // terminal failure, no retry
+)
+
+// terminalError represents a non-retryable error (pipeline/job failed or canceled)
+type terminalError struct {
+	message string
+}
+
+func (e *terminalError) Error() string {
+	return e.message
+}
+
+// waitForPipeline waits for a pipeline to complete.
+// If the main pipeline has a "deploy service" bridge job, it waits for the
+// "deploy helm" job in the downstream pipeline to succeed.
+// Otherwise, it waits for the main pipeline to succeed.
 func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int) error {
 	projectPath := url.QueryEscape(service.GitlabProject)
-	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d", gitlabURI, projectPath, pipelineID)
-
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	// Poll every 30 seconds
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -287,65 +337,37 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 	maxRetryDuration := 60 * time.Minute
 	var firstErrorTime time.Time
 
+	downstreamPipelineID := 0
+
 	for {
-		req, err := http.NewRequest("GET", apiURL, nil)
-		if err != nil {
-			return err
+		var result pollResult
+		var err error
+
+		if downstreamPipelineID > 0 {
+			result, err = pollDeployHelmJob(client, gitlabURI, gitlabToken, projectPath, downstreamPipelineID, service.Name)
+		} else {
+			result, downstreamPipelineID, err = pollMainPipeline(client, gitlabURI, gitlabToken, projectPath, pipelineID, service.Name)
 		}
 
-		req.Header.Set("PRIVATE-TOKEN", gitlabToken)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			if firstErrorTime.IsZero() {
-				firstErrorTime = time.Now()
-			}
-			if time.Since(firstErrorTime) > maxRetryDuration {
-				return fmt.Errorf("failed to check pipeline status for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
-			}
-			fmt.Printf("  Warning: failed to check pipeline for %s: %v\n", service.Name, err)
-			<-ticker.C
-			continue
-		}
-
-		body, err := ioutil.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			if firstErrorTime.IsZero() {
-				firstErrorTime = time.Now()
-			}
-			if time.Since(firstErrorTime) > maxRetryDuration {
-				return fmt.Errorf("failed to read pipeline response for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
-			}
-			fmt.Printf("  Warning: failed to read response for %s: %v\n", service.Name, err)
-			<-ticker.C
-			continue
-		}
-
-		var pipelineResp PipelineResponse
-		if err := json.Unmarshal(body, &pipelineResp); err != nil {
-			if firstErrorTime.IsZero() {
-				firstErrorTime = time.Now()
-			}
-			if time.Since(firstErrorTime) > maxRetryDuration {
-				return fmt.Errorf("failed to parse pipeline response for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
-			}
-			fmt.Printf("  Warning: failed to parse response for %s: %v\n", service.Name, err)
-			<-ticker.C
-			continue
-		}
-
-		// Reset error tracking on successful request
-		firstErrorTime = time.Time{}
-
-		switch pipelineResp.Status {
-		case "success":
-			fmt.Printf("  %s✓ Pipeline completed successfully for %s%s\n", colorGreen, service.Name, colorReset)
+		if result == pollSuccess {
 			return nil
-		case "failed", "canceled", "skipped":
-			return fmt.Errorf("pipeline %s for %s", pipelineResp.Status, service.Name)
-		case "running", "pending", "created":
-			fmt.Printf("  Pipeline for %s is %s...\n", service.Name, pipelineResp.Status)
+		}
+
+		if err != nil {
+			// Terminal errors (failed/canceled) — return immediately
+			if _, ok := err.(*terminalError); ok {
+				return err
+			}
+			// Transient errors — retry with timeout
+			if firstErrorTime.IsZero() {
+				firstErrorTime = time.Now()
+			}
+			if time.Since(firstErrorTime) > maxRetryDuration {
+				return fmt.Errorf("pipeline monitoring failed for %s, errors for over %v: %v", service.Name, maxRetryDuration, err)
+			}
+			fmt.Printf("  Warning: %v\n", err)
+		} else {
+			firstErrorTime = time.Time{}
 		}
 
 		if time.Since(startTime) > maxDuration {
@@ -354,4 +376,87 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 
 		<-ticker.C
 	}
+}
+
+// pollMainPipeline checks the main pipeline status and looks for a "deploy service" bridge.
+// Returns (pollSuccess, 0, nil) if main pipeline succeeded without downstream.
+// Returns (pollContinue, downstreamID, nil) if downstream pipeline found.
+// Returns (pollContinue, 0, nil) if still in progress.
+// Returns (pollContinue, 0, err) on terminal or transient errors.
+func pollMainPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, serviceName string) (pollResult, int, error) {
+	// Check main pipeline status
+	pipelineURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d", gitlabURI, projectPath, pipelineID)
+	body, err := gitlabGet(client, pipelineURL, gitlabToken)
+	if err != nil {
+		return pollContinue, 0, fmt.Errorf("failed to check pipeline for %s: %v", serviceName, err)
+	}
+
+	var pipelineResp PipelineResponse
+	if err := json.Unmarshal(body, &pipelineResp); err != nil {
+		return pollContinue, 0, fmt.Errorf("failed to parse pipeline response for %s: %v", serviceName, err)
+	}
+
+	// Check for bridges (downstream pipelines)
+	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges", gitlabURI, projectPath, pipelineID)
+	bridgesBody, err := gitlabGet(client, bridgesURL, gitlabToken)
+	if err != nil {
+		return pollContinue, 0, fmt.Errorf("failed to check bridges for %s: %v", serviceName, err)
+	}
+
+	var bridges []BridgeResponse
+	if err := json.Unmarshal(bridgesBody, &bridges); err != nil {
+		return pollContinue, 0, fmt.Errorf("failed to parse bridges response for %s: %v", serviceName, err)
+	}
+
+	for _, bridge := range bridges {
+		if bridge.Name == "deploy service" && bridge.DownstreamPipeline != nil {
+			fmt.Printf("  Found downstream pipeline %d for %s\n", bridge.DownstreamPipeline.ID, serviceName)
+			return pollContinue, bridge.DownstreamPipeline.ID, nil
+		}
+	}
+
+	// No downstream pipeline — check main pipeline status
+	switch pipelineResp.Status {
+	case "success":
+		fmt.Printf("  %s✓ Pipeline completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
+		return pollSuccess, 0, nil
+	case "failed", "canceled", "skipped":
+		return pollContinue, 0, &terminalError{fmt.Sprintf("pipeline %s for %s", pipelineResp.Status, serviceName)}
+	default:
+		fmt.Printf("  Pipeline for %s is %s...\n", serviceName, pipelineResp.Status)
+	}
+
+	return pollContinue, 0, nil
+}
+
+// pollDeployHelmJob checks the "deploy helm" job status in the downstream pipeline.
+func pollDeployHelmJob(client *http.Client, gitlabURI, gitlabToken, projectPath string, downstreamPipelineID int, serviceName string) (pollResult, error) {
+	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs", gitlabURI, projectPath, downstreamPipelineID)
+	body, err := gitlabGet(client, jobsURL, gitlabToken)
+	if err != nil {
+		return pollContinue, fmt.Errorf("failed to check downstream jobs for %s: %v", serviceName, err)
+	}
+
+	var jobs []JobResponse
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return pollContinue, fmt.Errorf("failed to parse downstream jobs for %s: %v", serviceName, err)
+	}
+
+	for _, job := range jobs {
+		if job.Name == "deploy helm" {
+			switch job.Status {
+			case "success":
+				fmt.Printf("  %s✓ Job \"deploy helm\" completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
+				return pollSuccess, nil
+			case "failed", "canceled":
+				return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" %s for %s", job.Status, serviceName)}
+			default:
+				fmt.Printf("  Job \"deploy helm\" for %s is %s...\n", serviceName, job.Status)
+			}
+			return pollContinue, nil
+		}
+	}
+
+	fmt.Printf("  Waiting for job \"deploy helm\" to appear in downstream pipeline for %s...\n", serviceName)
+	return pollContinue, nil
 }
