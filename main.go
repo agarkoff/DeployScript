@@ -210,9 +210,19 @@ func main() {
 	// Phase 4: Update all pom.xml files
 	fmt.Println("\nPhase 4: Updating pom.xml files...")
 	versionString := fmt.Sprintf("%d", version)
+
+	// Convert config exclusions to maven exclusions
+	var excludeArtifacts []maven.ArtifactExclusion
+	for _, excl := range cfg.SkipVersionUpdate {
+		excludeArtifacts = append(excludeArtifacts, maven.ArtifactExclusion{
+			GroupID:    excl.GroupID,
+			ArtifactID: excl.ArtifactID,
+		})
+	}
+
 	for _, service := range services {
 		fmt.Printf("  Updating service: %s\n", service)
-		if err := maven.UpdatePomFiles(serviceDirs[service], versionString, pomPropertyPattern, updateParentVersion[service]); err != nil {
+		if err := maven.UpdatePomFiles(serviceDirs[service], versionString, pomPropertyPattern, updateParentVersion[service], excludeArtifacts, cfg.SkipProperties); err != nil {
 			log.Fatalf("Failed to update pom files in %s: %v", service, err)
 		}
 	}

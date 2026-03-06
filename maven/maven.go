@@ -99,8 +99,14 @@ func BuildService(serviceDir string) error {
 	return nil
 }
 
+// ArtifactExclusion defines an artifact whose version should not be updated
+type ArtifactExclusion struct {
+	GroupID    string
+	ArtifactID string
+}
+
 // UpdatePomFiles updates all pom.xml files in the directory with the new version
-func UpdatePomFiles(dir string, version string, propertyPattern string, updateParentVersion bool) error {
+func UpdatePomFiles(dir string, version string, propertyPattern string, updateParentVersion bool, excludeArtifacts []ArtifactExclusion, skipProperties []string) error {
 	// Find all pom.xml files
 	var pomFiles []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -121,7 +127,7 @@ func UpdatePomFiles(dir string, version string, propertyPattern string, updatePa
 		// Check if this is a root pom (in the service's top directory)
 		isRootPom := filepath.Dir(pomFile) == dir
 
-		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern, updateParentVersion); err != nil {
+		if err := UpdatePomFile(pomFile, version, isRootPom, propertyPattern, updateParentVersion, excludeArtifacts, skipProperties); err != nil {
 			return fmt.Errorf("failed to update %s: %v", pomFile, err)
 		}
 	}
@@ -129,8 +135,80 @@ func UpdatePomFiles(dir string, version string, propertyPattern string, updatePa
 	return nil
 }
 
+// extractProjectIdentity extracts the project-level groupId and artifactId from POM content
+func extractProjectIdentity(content string) (groupID, artifactID string) {
+	lines := strings.Split(content, "\n")
+	insideParent := false
+	insideNested := 0
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.Contains(trimmed, "<parent>") {
+			insideParent = true
+		} else if strings.Contains(trimmed, "</parent>") {
+			insideParent = false
+		}
+
+		// Track blocks that can contain their own groupId/artifactId
+		for _, tag := range []string{"<dependencies>", "<dependencyManagement>", "<build>", "<profiles>", "<reporting>"} {
+			if strings.Contains(trimmed, tag) {
+				insideNested++
+			}
+		}
+		for _, tag := range []string{"</dependencies>", "</dependencyManagement>", "</build>", "</profiles>", "</reporting>"} {
+			if strings.Contains(trimmed, tag) {
+				insideNested--
+			}
+		}
+
+		if !insideParent && insideNested == 0 {
+			if groupID == "" && strings.Contains(trimmed, "<groupId>") && strings.Contains(trimmed, "</groupId>") {
+				s := strings.Index(trimmed, "<groupId>") + 9
+				e := strings.Index(trimmed, "</groupId>")
+				if s > 8 && e > s {
+					groupID = trimmed[s:e]
+				}
+			}
+			if artifactID == "" && strings.Contains(trimmed, "<artifactId>") && strings.Contains(trimmed, "</artifactId>") {
+				s := strings.Index(trimmed, "<artifactId>") + 12
+				e := strings.Index(trimmed, "</artifactId>")
+				if s > 11 && e > s {
+					artifactID = trimmed[s:e]
+				}
+			}
+		}
+
+		// Once we have both, no need to continue
+		if groupID != "" && artifactID != "" {
+			break
+		}
+	}
+	return
+}
+
+// isArtifactExcluded checks if the artifact matches any exclusion rule
+func isArtifactExcluded(groupID, artifactID string, exclusions []ArtifactExclusion) bool {
+	for _, excl := range exclusions {
+		if excl.GroupID == groupID && excl.ArtifactID == artifactID {
+			return true
+		}
+	}
+	return false
+}
+
+// isPropertySkipped checks if the property name matches any entry in the skip list
+func isPropertySkipped(propertyName string, skipProperties []string) bool {
+	for _, skip := range skipProperties {
+		if propertyName == skip {
+			return true
+		}
+	}
+	return false
+}
+
 // UpdatePomFile updates a single pom.xml file with the new version
-func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string, updateParentVersion bool) error {
+func UpdatePomFile(filename string, version string, isRootPom bool, propertyPattern string, updateParentVersion bool, excludeArtifacts []ArtifactExclusion, skipProperties []string) error {
 	// Read file
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -139,6 +217,13 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 
 	content := string(data)
 	newVersion := version + ".0"
+
+	// Check if this POM's own artifact matches an exclusion — skip all updates
+	projectGroupID, projectArtifactID := extractProjectIdentity(content)
+	if isArtifactExcluded(projectGroupID, projectArtifactID, excludeArtifacts) {
+		fmt.Printf("    Skipping all version updates for excluded artifact %s:%s in %s\n", projectGroupID, projectArtifactID, filename)
+		return nil
+	}
 
 	// Parse line by line
 	lines := strings.Split(content, "\n")
@@ -155,6 +240,10 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 	// Counter for tags after project
 	tagsAfterProject := 0
 
+	// Track parent groupId and artifactId for exclusion check
+	parentGroupID := ""
+	parentArtifactID := ""
+
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
@@ -167,8 +256,28 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 		// Track entering/exiting parent
 		if strings.Contains(line, "<parent>") {
 			insideParent = true
+			parentGroupID = ""
+			parentArtifactID = ""
 		} else if strings.Contains(line, "</parent>") {
 			insideParent = false
+		}
+
+		// Track parent groupId and artifactId
+		if insideParent {
+			if strings.Contains(trimmed, "<groupId>") && strings.Contains(trimmed, "</groupId>") {
+				s := strings.Index(trimmed, "<groupId>") + 9
+				e := strings.Index(trimmed, "</groupId>")
+				if s > 8 && e > s {
+					parentGroupID = trimmed[s:e]
+				}
+			}
+			if strings.Contains(trimmed, "<artifactId>") && strings.Contains(trimmed, "</artifactId>") {
+				s := strings.Index(trimmed, "<artifactId>") + 12
+				e := strings.Index(trimmed, "</artifactId>")
+				if s > 11 && e > s {
+					parentArtifactID = trimmed[s:e]
+				}
+			}
 		}
 
 		// Track entering/exiting properties
@@ -214,11 +323,17 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 				// CASE 2a: Update version inside parent
 				// For submodule POMs - always update parent version (it references the root POM)
 				// For root POMs - only update if updateParentVersion flag is set
+				// Skip if parent matches an exclusion rule
 				if insideParent && !parentVersionUpdated && (!isRootPom || updateParentVersion) {
-					newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
-						"<version>"+newVersion+"</version>", 1)
-					lines[i] = newLine
-					parentVersionUpdated = true
+					if !isArtifactExcluded(parentGroupID, parentArtifactID, excludeArtifacts) {
+						newLine := strings.Replace(line, "<version>"+currentVersion+"</version>",
+							"<version>"+newVersion+"</version>", 1)
+						lines[i] = newLine
+						parentVersionUpdated = true
+					} else {
+						fmt.Printf("    Skipping parent version update for %s:%s in %s\n", parentGroupID, parentArtifactID, filename)
+						parentVersionUpdated = true
+					}
 				}
 
 				// CASE 2b: Submodule POM - update project version
@@ -244,15 +359,20 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 
 				// Check if this is a property matching pattern (not a closing tag)
 				if strings.Contains(tagContent, propertyPattern) && !strings.HasPrefix(tagContent, "/") {
-					// Find the value
-					valueStart := endTag + 1
-					valueEnd := strings.Index(trimmed[valueStart:], "<")
+					// Check if this property is in the skip list
+					if isPropertySkipped(tagContent, skipProperties) {
+						fmt.Printf("    Skipping property <%s> in %s\n", tagContent, filename)
+					} else {
+						// Find the value
+						valueStart := endTag + 1
+						valueEnd := strings.Index(trimmed[valueStart:], "<")
 
-					if valueEnd > 0 {
-						// Replace the value
-						oldValue := trimmed[valueStart : valueStart+valueEnd]
-						newLine := strings.Replace(line, ">"+oldValue+"<", ">"+newVersion+"<", 1)
-						lines[i] = newLine
+						if valueEnd > 0 {
+							// Replace the value
+							oldValue := trimmed[valueStart : valueStart+valueEnd]
+							newLine := strings.Replace(line, ">"+oldValue+"<", ">"+newVersion+"<", 1)
+							lines[i] = newLine
+						}
 					}
 				}
 			}

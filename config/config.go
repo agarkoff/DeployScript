@@ -14,11 +14,19 @@ type Service struct {
 	UpdateParentVersion bool   `yaml:"update_parent_version"`
 }
 
+// ArtifactExclusion defines an artifact whose version should not be updated anywhere
+type ArtifactExclusion struct {
+	GroupID    string `yaml:"groupId"`
+	ArtifactID string `yaml:"artifactId"`
+}
+
 // Config represents the deploy configuration with new structure
 type Config struct {
-	TaskURLPrefix string               `yaml:"task_url_prefix"`
-	Sequential    []Service            `yaml:"sequential"`
-	Groups        map[string][]Service `yaml:"groups"`
+	TaskURLPrefix      string               `yaml:"task_url_prefix"`
+	SkipVersionUpdate  []ArtifactExclusion  `yaml:"skip_version_update"`
+	SkipProperties     []string             `yaml:"skip_properties"`
+	Sequential         []Service            `yaml:"sequential"`
+	Groups             map[string][]Service `yaml:"groups"`
 }
 
 // ReadYAMLConfig reads and parses the YAML configuration file
