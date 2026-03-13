@@ -216,7 +216,7 @@ func UpdatePomFile(filename string, version string, isRootPom bool, propertyPatt
 	}
 
 	content := string(data)
-	newVersion := version + ".0"
+	newVersion := version + ".0.0"
 
 	// Check if this POM's own artifact matches an exclusion — skip all updates
 	projectGroupID, projectArtifactID := extractProjectIdentity(content)

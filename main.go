@@ -113,7 +113,7 @@ func main() {
 		log.Fatalf("Failed to read config: %v", err)
 	}
 
-	tagName := fmt.Sprintf("release-%d.0", version)
+	tagName := fmt.Sprintf("release-%d.0.0", version)
 
 	if continueMode {
 		// Continue mode: skip build phases, re-run failed/missing pipelines
@@ -300,7 +300,7 @@ func main() {
 
 	// Phase 6: Commit changes for all
 	fmt.Println("\nPhase 6: Committing changes...")
-	commitMsg := fmt.Sprintf("Up to version %d.0", version)
+	commitMsg := fmt.Sprintf("Update version to %d.0.0", version)
 	for _, service := range services {
 		fmt.Printf("  Committing service: %s\n", service)
 		if err := git.AddAll(serviceDirs[service]); err != nil {
