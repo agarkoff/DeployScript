@@ -47,6 +47,18 @@ sequential:
     directory: skl-common
     gitlab_project: ecp/skl/skl-common
 
+  - name: person-benefit-category-aggregate
+    directory: person-benefit-category-aggregate
+    gitlab_project: ecp/skl/glk/person-benefit-category-aggregate
+
+  - name: person-benefit-category-bo
+    directory: person-benefit-category-bo
+    gitlab_project: ecp/skl/glk/person-benefit-category-bo
+
+  - name: person-benefit-category-knd
+    directory: person-benefit-category-knd
+    gitlab_project: ecp/skl/glk/person-benefit-category-knd
+
 # Grouped services (executed in parallel within each group)
 groups:
   # Backend services group
