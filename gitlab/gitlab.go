@@ -250,7 +250,7 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 	latest := pipelines[0]
 
 	// Check for downstream pipeline via bridges
-	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges",
+	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges?per_page=100",
 		gitlabURI, projectPath, latest.ID)
 
 	bridgesBody, err := gitlabGet(client, bridgesURL, gitlabToken)
@@ -267,7 +267,7 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 	for _, bridge := range bridges {
 		if bridge.Name == "deploy service" && bridge.DownstreamPipeline != nil {
 			// Has downstream — check "deploy helm" job
-			jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs",
+			jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100",
 				gitlabURI, projectPath, bridge.DownstreamPipeline.ID)
 
 			jobsBody, err := gitlabGet(client, jobsURL, gitlabToken)
@@ -478,9 +478,9 @@ func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace 
 	return pipelineResp.ID, nil
 }
 
-// gitlabGet performs a GET request to GitLab API with retry logic
-func gitlabGet(client *http.Client, url, token string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
+// gitlabGet performs a GET request to GitLab API
+func gitlabGet(client *http.Client, apiURL, token string) ([]byte, error) {
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +492,16 @@ func gitlabGet(client *http.Client, url, token string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	return ioutil.ReadAll(resp.Body)
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GitLab API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
 }
 
 // pollResult represents the outcome of a single polling iteration
@@ -551,7 +560,13 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 		}
 
 		if result == pollSuccess {
-			return nil
+			if runJob != "" && !runJobTriggered {
+				// Deploy completed but run-job not yet triggered (job may still be in "created" status
+				// until the bridge completes and its stage advances to make the job "manual")
+				fmt.Printf("  Deploy completed for %s, waiting to trigger job \"%s\"...\n", service.Name, runJob)
+			} else {
+				return nil
+			}
 		}
 
 		if err != nil {
@@ -581,7 +596,7 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 
 // triggerManualJob finds and triggers a manual or delayed job in the pipeline
 func triggerManualJob(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, jobName string, serviceName string) error {
-	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs", gitlabURI, projectPath, pipelineID)
+	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, pipelineID)
 	body, err := gitlabGet(client, jobsURL, gitlabToken)
 	if err != nil {
 		return fmt.Errorf("failed to get jobs: %v", err)
@@ -592,31 +607,38 @@ func triggerManualJob(client *http.Client, gitlabURI, gitlabToken, projectPath s
 		return fmt.Errorf("failed to parse jobs: %v", err)
 	}
 
+	var foundStatus string
 	for _, job := range jobs {
-		if job.Name == jobName && (job.Status == "manual" || job.Status == "scheduled") {
-			playURL := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%d/play", gitlabURI, projectPath, job.ID)
-			req, err := http.NewRequest("POST", playURL, nil)
-			if err != nil {
-				return fmt.Errorf("failed to create play request: %v", err)
-			}
-			req.Header.Set("PRIVATE-TOKEN", gitlabToken)
+		if job.Name == jobName {
+			foundStatus = job.Status
+			if job.Status == "manual" || job.Status == "scheduled" {
+				playURL := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%d/play", gitlabURI, projectPath, job.ID)
+				req, err := http.NewRequest("POST", playURL, nil)
+				if err != nil {
+					return fmt.Errorf("failed to create play request: %v", err)
+				}
+				req.Header.Set("PRIVATE-TOKEN", gitlabToken)
 
-			resp, err := client.Do(req)
-			if err != nil {
-				return fmt.Errorf("failed to trigger job: %v", err)
-			}
-			resp.Body.Close()
+				resp, err := client.Do(req)
+				if err != nil {
+					return fmt.Errorf("failed to trigger job: %v", err)
+				}
+				resp.Body.Close()
 
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-				return fmt.Errorf("failed to trigger job, status code: %d", resp.StatusCode)
-			}
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+					return fmt.Errorf("failed to trigger job, status code: %d", resp.StatusCode)
+				}
 
-			fmt.Printf("  %s✓ Triggered job \"%s\" for %s%s\n", colorGreen, jobName, serviceName, colorReset)
-			return nil
+				fmt.Printf("  %s✓ Triggered job \"%s\" for %s%s\n", colorGreen, jobName, serviceName, colorReset)
+				return nil
+			}
 		}
 	}
 
-	return fmt.Errorf("job \"%s\" not found with manual/scheduled status", jobName)
+	if foundStatus != "" {
+		return fmt.Errorf("job \"%s\" found but has status \"%s\" (expected manual/scheduled)", jobName, foundStatus)
+	}
+	return fmt.Errorf("job \"%s\" not found in pipeline %d (%d jobs total)", jobName, pipelineID, len(jobs))
 }
 
 // pollMainPipeline checks the main pipeline status and looks for a "deploy service" bridge.
@@ -638,7 +660,7 @@ func pollMainPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath s
 	}
 
 	// Check for bridges (downstream pipelines)
-	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges", gitlabURI, projectPath, pipelineID)
+	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges?per_page=100", gitlabURI, projectPath, pipelineID)
 	bridgesBody, err := gitlabGet(client, bridgesURL, gitlabToken)
 	if err != nil {
 		return pollContinue, 0, fmt.Errorf("failed to check bridges for %s: %v", serviceName, err)
@@ -672,7 +694,7 @@ func pollMainPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath s
 
 // pollDeployHelmJob checks the "deploy helm" job status in the downstream pipeline.
 func pollDeployHelmJob(client *http.Client, gitlabURI, gitlabToken, projectPath string, downstreamPipelineID int, serviceName string) (pollResult, error) {
-	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs", gitlabURI, projectPath, downstreamPipelineID)
+	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, downstreamPipelineID)
 	body, err := gitlabGet(client, jobsURL, gitlabToken)
 	if err != nil {
 		return pollContinue, fmt.Errorf("failed to check downstream jobs for %s: %v", serviceName, err)
