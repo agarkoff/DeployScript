@@ -11,6 +11,7 @@ type Service struct {
 	Directory     string `yaml:"directory"`
 	GitlabProject string `yaml:"gitlab_project"`
 	IsMesh        bool   `yaml:"is_mesh"`
+	IsLibrary     bool   `yaml:"is_library"`
 }
 
 // ArtifactExclusion defines an artifact whose version should not be updated anywhere

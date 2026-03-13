@@ -62,11 +62,17 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, namespaces []stri
 		return fmt.Errorf("GITLAB_URI environment variable is not set")
 	}
 
-	for _, namespace := range namespaces {
+	for i, namespace := range namespaces {
+		isFirstNamespace := i == 0
 		fmt.Printf("\n%s=== Deploying to namespace: %s ===%s\n", colorBlue, namespace, colorReset)
 
 		// Process sequential services first
 		for _, service := range cfg.Sequential {
+			if service.IsLibrary && !isFirstNamespace {
+				fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", service.Name)
+				continue
+			}
+
 			fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
 
 			pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, namespace)
@@ -81,12 +87,26 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, namespaces []stri
 
 		// Process each group in sequence, but services within a group in parallel
 		for groupName, groupServices := range cfg.Groups {
+			// Filter out library services on non-first namespaces
+			var servicesToRun []config.Service
+			for _, svc := range groupServices {
+				if svc.IsLibrary && !isFirstNamespace {
+					fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", svc.Name)
+					continue
+				}
+				servicesToRun = append(servicesToRun, svc)
+			}
+
+			if len(servicesToRun) == 0 {
+				continue
+			}
+
 			fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s (namespace: %s)%s\n", colorBlue, groupName, ref, namespace, colorReset)
 
 			var wg sync.WaitGroup
-			errors := make(chan error, len(groupServices))
+			errors := make(chan error, len(servicesToRun))
 
-			for _, service := range groupServices {
+			for _, service := range servicesToRun {
 				wg.Add(1)
 				go func(svc config.Service) {
 					defer wg.Done()
@@ -135,7 +155,8 @@ func ContinuePipelinesFromConfig(cfg *config.Config, ref string, namespaces []st
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	for _, namespace := range namespaces {
+	for i, namespace := range namespaces {
+		isFirstNamespace := i == 0
 		fmt.Printf("\n%s=== Continuing deployment for namespace: %s ===%s\n", colorBlue, namespace, colorReset)
 
 		continueService := func(service config.Service) error {
@@ -165,6 +186,10 @@ func ContinuePipelinesFromConfig(cfg *config.Config, ref string, namespaces []st
 
 		// Process sequential services first
 		for _, service := range cfg.Sequential {
+			if service.IsLibrary && !isFirstNamespace {
+				fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", service.Name)
+				continue
+			}
 			if err := continueService(service); err != nil {
 				return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
 			}
@@ -172,12 +197,26 @@ func ContinuePipelinesFromConfig(cfg *config.Config, ref string, namespaces []st
 
 		// Process each group in sequence, but services within a group in parallel
 		for groupName, groupServices := range cfg.Groups {
+			// Filter out library services on non-first namespaces
+			var servicesToRun []config.Service
+			for _, svc := range groupServices {
+				if svc.IsLibrary && !isFirstNamespace {
+					fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", svc.Name)
+					continue
+				}
+				servicesToRun = append(servicesToRun, svc)
+			}
+
+			if len(servicesToRun) == 0 {
+				continue
+			}
+
 			fmt.Printf("\n%sProcessing group: %s (namespace: %s)%s\n", colorBlue, groupName, namespace, colorReset)
 
 			var wg sync.WaitGroup
-			errors := make(chan error, len(groupServices))
+			errors := make(chan error, len(servicesToRun))
 
-			for _, service := range groupServices {
+			for _, service := range servicesToRun {
 				wg.Add(1)
 				go func(svc config.Service) {
 					defer wg.Done()
