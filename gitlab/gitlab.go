@@ -29,14 +29,6 @@ type PipelineResponse struct {
 	WebURL string `json:"web_url"`
 }
 
-// BridgeResponse represents a GitLab bridge job (trigger for downstream pipeline)
-type BridgeResponse struct {
-	ID                 int               `json:"id"`
-	Name               string            `json:"name"`
-	Status             string            `json:"status"`
-	DownstreamPipeline *PipelineResponse `json:"downstream_pipeline"`
-}
-
 // JobResponse represents a GitLab pipeline job
 type JobResponse struct {
 	ID     int    `json:"id"`
@@ -44,14 +36,10 @@ type JobResponse struct {
 	Status string `json:"status"`
 }
 
-// ProjectVariable represents a GitLab project variable
-type ProjectVariable struct {
-	Key              string `json:"key"`
-	Value            string `json:"value"`
-	VariableType     string `json:"variable_type"`
-	Protected        bool   `json:"protected"`
-	Masked           bool   `json:"masked"`
-	EnvironmentScope string `json:"environment_scope"`
+// PipelineVariable represents a GitLab pipeline variable
+type PipelineVariable struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 const (
@@ -60,8 +48,9 @@ const (
 	colorReset = "\033[0m"
 )
 
-// CreatePipelinesFromConfig creates GitLab pipelines using the new config structure
-func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace string, runJob string) error {
+// CreatePipelinesFromConfig creates GitLab pipelines for each namespace sequentially.
+// ALL services must succeed on namespace N before namespace N+1 begins.
+func CreatePipelinesFromConfig(cfg *config.Config, ref string, namespaces []string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
 		return fmt.Errorf("GITLAB_TOKEN environment variable is not set")
@@ -72,66 +61,67 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace str
 		return fmt.Errorf("GITLAB_URI environment variable is not set")
 	}
 
-	// Process sequential services first
-	for _, service := range cfg.Sequential {
-		fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s%s\n", colorBlue, service.Name, ref, colorReset)
+	for _, namespace := range namespaces {
+		fmt.Printf("\n%s=== Deploying to namespace: %s ===%s\n", colorBlue, namespace, colorReset)
 
-		pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, helmNamespace)
-		if err != nil {
-			return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
-		}
+		// Process sequential services first
+		for _, service := range cfg.Sequential {
+			fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
 
-		// Wait for pipeline to complete
-		if err := waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID, runJob); err != nil {
-			return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
-		}
-	}
-
-	// Process each group in sequence, but services within a group in parallel
-	for groupName, groupServices := range cfg.Groups {
-		fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s%s\n", colorBlue, groupName, ref, colorReset)
-
-		var wg sync.WaitGroup
-		errors := make(chan error, len(groupServices))
-
-		for _, service := range groupServices {
-			wg.Add(1)
-			go func(svc config.Service) {
-				defer wg.Done()
-
-				pipelineID, err := createPipelineForService(svc, gitlabURI, gitlabToken, ref, helmNamespace)
-				if err != nil {
-					errors <- fmt.Errorf("failed to create pipeline for %s: %v", svc.Name, err)
-					return
-				}
-
-				// Wait for pipeline to complete
-				if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID, runJob); err != nil {
-					errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
-					return
-				}
-			}(service)
-		}
-
-		wg.Wait()
-		close(errors)
-
-		// Check for errors
-		for err := range errors {
+			pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, namespace)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
+			}
+
+			if err := waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID); err != nil {
+				return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
 			}
 		}
+
+		// Process each group in sequence, but services within a group in parallel
+		for groupName, groupServices := range cfg.Groups {
+			fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s (namespace: %s)%s\n", colorBlue, groupName, ref, namespace, colorReset)
+
+			var wg sync.WaitGroup
+			errors := make(chan error, len(groupServices))
+
+			for _, service := range groupServices {
+				wg.Add(1)
+				go func(svc config.Service) {
+					defer wg.Done()
+
+					pipelineID, err := createPipelineForService(svc, gitlabURI, gitlabToken, ref, namespace)
+					if err != nil {
+						errors <- fmt.Errorf("failed to create pipeline for %s: %v", svc.Name, err)
+						return
+					}
+
+					if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID); err != nil {
+						errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
+						return
+					}
+				}(service)
+			}
+
+			wg.Wait()
+			close(errors)
+
+			for err := range errors {
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		fmt.Printf("\n%s=== Namespace %s completed ===%s\n", colorGreen, namespace, colorReset)
 	}
 
 	return nil
 }
 
-// ContinuePipelinesFromConfig checks pipeline statuses and re-runs failed/missing ones.
-// For each service it checks pipelines from the last 24 hours on the given ref.
-// If a pipeline succeeded (including downstream "deploy helm" where applicable), it's skipped.
-// Otherwise, a new pipeline is created and monitored.
-func ContinuePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace string, runJob string) error {
+// ContinuePipelinesFromConfig checks pipeline statuses and re-runs failed/missing ones
+// for each namespace sequentially. Matches pipelines by ref + HELM_NAMESPACE variable.
+func ContinuePipelinesFromConfig(cfg *config.Config, ref string, namespaces []string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
 		return fmt.Errorf("GITLAB_TOKEN environment variable is not set")
@@ -144,64 +134,69 @@ func ContinuePipelinesFromConfig(cfg *config.Config, ref string, helmNamespace s
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	// continueService handles a single service: checks status and either skips, waits, or re-runs
-	continueService := func(service config.Service) error {
-		info, err := checkServicePipelineStatus(client, gitlabURI, gitlabToken, service.GitlabProject, ref, service.Name)
-		if err != nil {
-			return fmt.Errorf("failed to check pipeline status for %s: %v", service.Name, err)
-		}
+	for _, namespace := range namespaces {
+		fmt.Printf("\n%s=== Continuing deployment for namespace: %s ===%s\n", colorBlue, namespace, colorReset)
 
-		switch info.result {
-		case pipelineSuccess:
-			fmt.Printf("  %s✓ %s already deployed successfully, skipping%s\n", colorGreen, service.Name, colorReset)
-			return nil
-
-		case pipelineRunning:
-			fmt.Printf("  %sWaiting for existing pipeline %d for %s%s\n", colorBlue, info.pipelineID, service.Name, colorReset)
-			return waitForPipelineForService(service, gitlabURI, gitlabToken, info.pipelineID, runJob)
-
-		default: // pipelineNeedsRerun
-			fmt.Printf("\n%sRe-running pipeline for %s on tag: %s%s\n", colorBlue, service.Name, ref, colorReset)
-			pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, helmNamespace)
+		continueService := func(service config.Service) error {
+			info, err := checkServicePipelineStatus(client, gitlabURI, gitlabToken, service.GitlabProject, ref, service.Name, namespace)
 			if err != nil {
-				return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
+				return fmt.Errorf("failed to check pipeline status for %s: %v", service.Name, err)
 			}
-			return waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID, runJob)
-		}
-	}
 
-	// Process sequential services first
-	for _, service := range cfg.Sequential {
-		if err := continueService(service); err != nil {
-			return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
-		}
-	}
+			switch info.result {
+			case pipelineSuccess:
+				fmt.Printf("  %s✓ %s already deployed successfully (namespace: %s), skipping%s\n", colorGreen, service.Name, namespace, colorReset)
+				return nil
 
-	// Process each group in sequence, but services within a group in parallel
-	for groupName, groupServices := range cfg.Groups {
-		fmt.Printf("\n%sProcessing group: %s%s\n", colorBlue, groupName, colorReset)
+			case pipelineRunning:
+				fmt.Printf("  %sWaiting for existing pipeline %d for %s (namespace: %s)%s\n", colorBlue, info.pipelineID, service.Name, namespace, colorReset)
+				return waitForPipelineForService(service, gitlabURI, gitlabToken, info.pipelineID)
 
-		var wg sync.WaitGroup
-		errors := make(chan error, len(groupServices))
-
-		for _, service := range groupServices {
-			wg.Add(1)
-			go func(svc config.Service) {
-				defer wg.Done()
-				if err := continueService(svc); err != nil {
-					errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
+			default: // pipelineNeedsRerun
+				fmt.Printf("\n%sRe-running pipeline for %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
+				pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, namespace)
+				if err != nil {
+					return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
 				}
-			}(service)
-		}
-
-		wg.Wait()
-		close(errors)
-
-		for err := range errors {
-			if err != nil {
-				return err
+				return waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID)
 			}
 		}
+
+		// Process sequential services first
+		for _, service := range cfg.Sequential {
+			if err := continueService(service); err != nil {
+				return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
+			}
+		}
+
+		// Process each group in sequence, but services within a group in parallel
+		for groupName, groupServices := range cfg.Groups {
+			fmt.Printf("\n%sProcessing group: %s (namespace: %s)%s\n", colorBlue, groupName, namespace, colorReset)
+
+			var wg sync.WaitGroup
+			errors := make(chan error, len(groupServices))
+
+			for _, service := range groupServices {
+				wg.Add(1)
+				go func(svc config.Service) {
+					defer wg.Done()
+					if err := continueService(svc); err != nil {
+						errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
+					}
+				}(service)
+			}
+
+			wg.Wait()
+			close(errors)
+
+			for err := range errors {
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		fmt.Printf("\n%s=== Namespace %s completed ===%s\n", colorGreen, namespace, colorReset)
 	}
 
 	return nil
@@ -222,8 +217,9 @@ type pipelineCheckInfo struct {
 	pipelineID int // set when result is pipelineRunning
 }
 
-// checkServicePipelineStatus checks the latest pipeline status for a service.
-func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, gitlabProject, ref, serviceName string) (pipelineCheckInfo, error) {
+// checkServicePipelineStatus checks the latest pipeline status for a service,
+// matching by ref and HELM_NAMESPACE pipeline variable.
+func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, gitlabProject, ref, serviceName, helmNamespace string) (pipelineCheckInfo, error) {
 	projectPath := url.QueryEscape(gitlabProject)
 	updatedAfter := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
 
@@ -246,164 +242,83 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 		return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
 	}
 
-	// Check the most recent pipeline
-	latest := pipelines[0]
+	// Find pipeline matching HELM_NAMESPACE variable
+	for _, pipeline := range pipelines {
+		varsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/variables",
+			gitlabURI, projectPath, pipeline.ID)
 
-	// Check for downstream pipeline via bridges
-	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges?per_page=100",
-		gitlabURI, projectPath, latest.ID)
+		varsBody, err := gitlabGet(client, varsURL, gitlabToken)
+		if err != nil {
+			fmt.Printf("  Warning: could not get variables for pipeline %d: %v\n", pipeline.ID, err)
+			continue
+		}
 
-	bridgesBody, err := gitlabGet(client, bridgesURL, gitlabToken)
-	if err != nil {
-		return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to check bridges: %v", err)
-	}
+		var variables []PipelineVariable
+		if err := json.Unmarshal(varsBody, &variables); err != nil {
+			fmt.Printf("  Warning: could not parse variables for pipeline %d: %v\n", pipeline.ID, err)
+			continue
+		}
 
-	var bridges []BridgeResponse
-	if err := json.Unmarshal(bridgesBody, &bridges); err != nil {
-		return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to parse bridges: %v", err)
-	}
-
-	// Look for "deploy service" bridge with downstream pipeline
-	for _, bridge := range bridges {
-		if bridge.Name == "deploy service" && bridge.DownstreamPipeline != nil {
-			// Has downstream — check "deploy helm" job
-			jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100",
-				gitlabURI, projectPath, bridge.DownstreamPipeline.ID)
-
-			jobsBody, err := gitlabGet(client, jobsURL, gitlabToken)
-			if err != nil {
-				return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to check downstream jobs: %v", err)
+		// Check if HELM_NAMESPACE matches
+		namespaceMatches := false
+		for _, v := range variables {
+			if v.Key == "HELM_NAMESPACE" && v.Value == helmNamespace {
+				namespaceMatches = true
+				break
 			}
+		}
 
-			var jobs []JobResponse
-			if err := json.Unmarshal(jobsBody, &jobs); err != nil {
-				return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to parse downstream jobs: %v", err)
-			}
+		if !namespaceMatches {
+			continue
+		}
 
-			for _, job := range jobs {
-				if job.Name == "deploy helm" {
-					switch job.Status {
-					case "success":
-						return pipelineCheckInfo{result: pipelineSuccess}, nil
-					case "running", "pending", "created":
-						fmt.Printf("  Pipeline %d for %s: deploy helm is %s, waiting...\n", latest.ID, serviceName, job.Status)
-						return pipelineCheckInfo{result: pipelineRunning, pipelineID: latest.ID}, nil
-					default:
-						fmt.Printf("  Pipeline %d for %s: deploy helm is %s\n", latest.ID, serviceName, job.Status)
-						return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
-					}
+		// Found matching pipeline — check "deploy helm" job directly
+		jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100",
+			gitlabURI, projectPath, pipeline.ID)
+
+		jobsBody, err := gitlabGet(client, jobsURL, gitlabToken)
+		if err != nil {
+			return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to check jobs: %v", err)
+		}
+
+		var jobs []JobResponse
+		if err := json.Unmarshal(jobsBody, &jobs); err != nil {
+			return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to parse jobs: %v", err)
+		}
+
+		for _, job := range jobs {
+			if job.Name == "deploy helm" {
+				switch job.Status {
+				case "success":
+					return pipelineCheckInfo{result: pipelineSuccess}, nil
+				case "running", "pending", "created":
+					fmt.Printf("  Pipeline %d for %s: deploy helm is %s, waiting...\n", pipeline.ID, serviceName, job.Status)
+					return pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID}, nil
+				default:
+					fmt.Printf("  Pipeline %d for %s: deploy helm is %s\n", pipeline.ID, serviceName, job.Status)
+					return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
 				}
 			}
+		}
 
-			// Bridge exists but no "deploy helm" job yet — pipeline might still be starting
-			if bridge.DownstreamPipeline.Status == "running" || bridge.DownstreamPipeline.Status == "pending" || bridge.DownstreamPipeline.Status == "created" {
-				fmt.Printf("  Pipeline %d for %s: downstream pipeline is %s, waiting...\n", latest.ID, serviceName, bridge.DownstreamPipeline.Status)
-				return pipelineCheckInfo{result: pipelineRunning, pipelineID: latest.ID}, nil
-			}
-
-			fmt.Printf("  Pipeline %d for %s: deploy helm job not found in downstream\n", latest.ID, serviceName)
+		// No "deploy helm" job yet — check pipeline status
+		switch pipeline.Status {
+		case "running", "pending", "created":
+			fmt.Printf("  Pipeline %d for %s is %s (no deploy helm job yet), waiting...\n", pipeline.ID, serviceName, pipeline.Status)
+			return pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID}, nil
+		default:
+			fmt.Printf("  Pipeline %d for %s is %s, no deploy helm job found\n", pipeline.ID, serviceName, pipeline.Status)
 			return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
 		}
 	}
 
-	// No downstream pipeline — check main pipeline status
-	switch latest.Status {
-	case "success":
-		return pipelineCheckInfo{result: pipelineSuccess}, nil
-	case "running", "pending", "created", "blocked":
-		fmt.Printf("  Pipeline %d for %s is %s, waiting...\n", latest.ID, serviceName, latest.Status)
-		return pipelineCheckInfo{result: pipelineRunning, pipelineID: latest.ID}, nil
-	default:
-		fmt.Printf("  Pipeline %d for %s is %s\n", latest.ID, serviceName, latest.Status)
-		return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
-	}
-}
-
-// CreatePipelines creates GitLab pipelines according to service configuration (legacy function)
-func CreatePipelines(services []Service, ref string, helmNamespace string) error {
-	gitlabToken := os.Getenv("GITLAB_TOKEN")
-	if gitlabToken == "" {
-		return fmt.Errorf("GITLAB_TOKEN environment variable is not set")
-	}
-
-	gitlabURI := os.Getenv("GITLAB_URI")
-	if gitlabURI == "" {
-		return fmt.Errorf("GITLAB_URI environment variable is not set")
-	}
-
-	// Group services by their group attribute
-	groups := make(map[string][]Service)
-	var sequentialServices []Service
-
-	for _, service := range services {
-		if service.Sequential {
-			sequentialServices = append(sequentialServices, service)
-		} else if service.Group != "" {
-			groups[service.Group] = append(groups[service.Group], service)
-		} else {
-			// Treat ungrouped non-sequential services as individual sequential services
-			sequentialServices = append(sequentialServices, service)
-		}
-	}
-
-	// Process sequential services first
-	for _, service := range sequentialServices {
-		fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s%s\n", colorBlue, service.Name, ref, colorReset)
-
-		pipelineID, err := createPipeline(service, gitlabURI, gitlabToken, ref, helmNamespace)
-		if err != nil {
-			return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
-		}
-
-		// Wait for pipeline to complete
-		if err := waitForPipeline(service, gitlabURI, gitlabToken, pipelineID, ""); err != nil {
-			return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
-		}
-	}
-
-	// Process grouped services in parallel
-	for groupName, groupServices := range groups {
-		fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s%s\n", colorBlue, groupName, ref, colorReset)
-
-		var wg sync.WaitGroup
-		errors := make(chan error, len(groupServices))
-
-		for _, service := range groupServices {
-			wg.Add(1)
-			go func(svc Service) {
-				defer wg.Done()
-
-				pipelineID, err := createPipeline(svc, gitlabURI, gitlabToken, ref, helmNamespace)
-				if err != nil {
-					errors <- fmt.Errorf("failed to create pipeline for %s: %v", svc.Name, err)
-					return
-				}
-
-				// Wait for pipeline to complete
-				if err := waitForPipeline(svc, gitlabURI, gitlabToken, pipelineID, ""); err != nil {
-					errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
-					return
-				}
-			}(service)
-		}
-
-		wg.Wait()
-		close(errors)
-
-		// Check for errors
-		for err := range errors {
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+	// No pipeline matched HELM_NAMESPACE
+	fmt.Printf("  No pipeline found for %s on %s with HELM_NAMESPACE=%s in last 24h\n", serviceName, ref, helmNamespace)
+	return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
 }
 
 // createPipelineForService creates a pipeline for config.Service
 func createPipelineForService(service config.Service, gitlabURI, gitlabToken, ref, helmNamespace string) (int, error) {
-	// Convert to gitlab.Service for compatibility
 	gitlabService := Service{
 		Name:          service.Name,
 		Directory:     service.Directory,
@@ -413,25 +328,20 @@ func createPipelineForService(service config.Service, gitlabURI, gitlabToken, re
 }
 
 // waitForPipelineForService waits for a pipeline for config.Service
-func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int, runJob string) error {
-	// Convert to gitlab.Service for compatibility
+func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int) error {
 	gitlabService := Service{
 		Name:          service.Name,
 		Directory:     service.Directory,
 		GitlabProject: service.GitlabProject,
 	}
-	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID, runJob)
+	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID)
 }
 
-// createPipeline creates a single pipeline
+// createPipeline creates a single pipeline with HELM_NAMESPACE variable
 func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace string) (int, error) {
-	// URL encode the project path
 	projectPath := url.QueryEscape(service.GitlabProject)
-
-	// Prepare the request
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipeline", gitlabURI, projectPath)
 
-	// Build request body
 	requestBody := map[string]interface{}{
 		"ref": ref,
 		"variables": []map[string]string{
@@ -510,7 +420,6 @@ type pollResult int
 const (
 	pollContinue pollResult = iota // keep polling
 	pollSuccess                    // done successfully
-	pollFailed                     // terminal failure, no retry
 )
 
 // terminalError represents a non-retryable error (pipeline/job failed or canceled)
@@ -522,11 +431,9 @@ func (e *terminalError) Error() string {
 	return e.message
 }
 
-// waitForPipeline waits for a pipeline to complete.
-// If the main pipeline has a "deploy service" bridge job, it waits for the
-// "deploy helm" job in the downstream pipeline to succeed.
-// Otherwise, it waits for the main pipeline to succeed.
-func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int, runJob string) error {
+// waitForPipeline waits for a pipeline to complete by polling the pipeline status
+// and the "deploy helm" job directly.
+func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int) error {
 	projectPath := url.QueryEscape(service.GitlabProject)
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -538,35 +445,11 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 	maxRetryDuration := 60 * time.Minute
 	var firstErrorTime time.Time
 
-	downstreamPipelineID := 0
-	runJobTriggered := false
-
 	for {
-		var result pollResult
-		var err error
-
-		if downstreamPipelineID > 0 {
-			// After finding downstream pipeline, trigger the manual job if requested
-			if runJob != "" && !runJobTriggered {
-				if triggerErr := triggerManualJob(client, gitlabURI, gitlabToken, projectPath, pipelineID, runJob, service.Name); triggerErr != nil {
-					fmt.Printf("  Warning: failed to trigger job \"%s\" for %s: %v\n", runJob, service.Name, triggerErr)
-				} else {
-					runJobTriggered = true
-				}
-			}
-			result, err = pollDeployHelmJob(client, gitlabURI, gitlabToken, projectPath, downstreamPipelineID, service.Name)
-		} else {
-			result, downstreamPipelineID, err = pollMainPipeline(client, gitlabURI, gitlabToken, projectPath, pipelineID, service.Name)
-		}
+		result, err := pollPipeline(client, gitlabURI, gitlabToken, projectPath, pipelineID, service.Name)
 
 		if result == pollSuccess {
-			if runJob != "" && !runJobTriggered {
-				// Deploy completed but run-job not yet triggered (job may still be in "created" status
-				// until the bridge completes and its stage advances to make the job "manual")
-				fmt.Printf("  Deploy completed for %s, waiting to trigger job \"%s\"...\n", service.Name, runJob)
-			} else {
-				return nil
-			}
+			return nil
 		}
 
 		if err != nil {
@@ -594,115 +477,38 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 	}
 }
 
-// triggerManualJob finds and triggers a manual or delayed job in the pipeline
-func triggerManualJob(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, jobName string, serviceName string) error {
-	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, pipelineID)
-	body, err := gitlabGet(client, jobsURL, gitlabToken)
-	if err != nil {
-		return fmt.Errorf("failed to get jobs: %v", err)
-	}
-
-	var jobs []JobResponse
-	if err := json.Unmarshal(body, &jobs); err != nil {
-		return fmt.Errorf("failed to parse jobs: %v", err)
-	}
-
-	var foundStatus string
-	for _, job := range jobs {
-		if job.Name == jobName {
-			foundStatus = job.Status
-			if job.Status == "manual" || job.Status == "scheduled" {
-				playURL := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%d/play", gitlabURI, projectPath, job.ID)
-				req, err := http.NewRequest("POST", playURL, nil)
-				if err != nil {
-					return fmt.Errorf("failed to create play request: %v", err)
-				}
-				req.Header.Set("PRIVATE-TOKEN", gitlabToken)
-
-				resp, err := client.Do(req)
-				if err != nil {
-					return fmt.Errorf("failed to trigger job: %v", err)
-				}
-				resp.Body.Close()
-
-				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-					return fmt.Errorf("failed to trigger job, status code: %d", resp.StatusCode)
-				}
-
-				fmt.Printf("  %s✓ Triggered job \"%s\" for %s%s\n", colorGreen, jobName, serviceName, colorReset)
-				return nil
-			}
-		}
-	}
-
-	if foundStatus != "" {
-		return fmt.Errorf("job \"%s\" found but has status \"%s\" (expected manual/scheduled)", jobName, foundStatus)
-	}
-	return fmt.Errorf("job \"%s\" not found in pipeline %d (%d jobs total)", jobName, pipelineID, len(jobs))
-}
-
-// pollMainPipeline checks the main pipeline status and looks for a "deploy service" bridge.
-// Returns (pollSuccess, 0, nil) if main pipeline succeeded without downstream.
-// Returns (pollContinue, downstreamID, nil) if downstream pipeline found.
-// Returns (pollContinue, 0, nil) if still in progress.
-// Returns (pollContinue, 0, err) on terminal or transient errors.
-func pollMainPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, serviceName string) (pollResult, int, error) {
-	// Check main pipeline status
+// pollPipeline checks the pipeline status and "deploy helm" job directly.
+// Returns pollSuccess when "deploy helm" succeeds.
+// Returns terminalError when pipeline or "deploy helm" job fails/cancels.
+// Returns pollContinue to keep polling.
+func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, serviceName string) (pollResult, error) {
+	// Check pipeline status
 	pipelineURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d", gitlabURI, projectPath, pipelineID)
 	body, err := gitlabGet(client, pipelineURL, gitlabToken)
 	if err != nil {
-		return pollContinue, 0, fmt.Errorf("failed to check pipeline for %s: %v", serviceName, err)
+		return pollContinue, fmt.Errorf("failed to check pipeline for %s: %v", serviceName, err)
 	}
 
 	var pipelineResp PipelineResponse
 	if err := json.Unmarshal(body, &pipelineResp); err != nil {
-		return pollContinue, 0, fmt.Errorf("failed to parse pipeline response for %s: %v", serviceName, err)
+		return pollContinue, fmt.Errorf("failed to parse pipeline response for %s: %v", serviceName, err)
 	}
 
-	// Check for bridges (downstream pipelines)
-	bridgesURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/bridges?per_page=100", gitlabURI, projectPath, pipelineID)
-	bridgesBody, err := gitlabGet(client, bridgesURL, gitlabToken)
+	// Terminal pipeline states
+	if pipelineResp.Status == "failed" || pipelineResp.Status == "canceled" {
+		return pollContinue, &terminalError{fmt.Sprintf("pipeline %s for %s", pipelineResp.Status, serviceName)}
+	}
+
+	// Check "deploy helm" job
+	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, pipelineID)
+	jobsBody, err := gitlabGet(client, jobsURL, gitlabToken)
 	if err != nil {
-		return pollContinue, 0, fmt.Errorf("failed to check bridges for %s: %v", serviceName, err)
-	}
-
-	var bridges []BridgeResponse
-	if err := json.Unmarshal(bridgesBody, &bridges); err != nil {
-		return pollContinue, 0, fmt.Errorf("failed to parse bridges response for %s: %v", serviceName, err)
-	}
-
-	for _, bridge := range bridges {
-		if bridge.Name == "deploy service" && bridge.DownstreamPipeline != nil {
-			fmt.Printf("  Found downstream pipeline %d for %s\n", bridge.DownstreamPipeline.ID, serviceName)
-			return pollContinue, bridge.DownstreamPipeline.ID, nil
-		}
-	}
-
-	// No downstream pipeline — check main pipeline status
-	switch pipelineResp.Status {
-	case "success":
-		fmt.Printf("  %s✓ Pipeline completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
-		return pollSuccess, 0, nil
-	case "failed", "canceled", "skipped":
-		return pollContinue, 0, &terminalError{fmt.Sprintf("pipeline %s for %s", pipelineResp.Status, serviceName)}
-	default:
-		fmt.Printf("  Pipeline for %s is %s...\n", serviceName, pipelineResp.Status)
-	}
-
-	return pollContinue, 0, nil
-}
-
-// pollDeployHelmJob checks the "deploy helm" job status in the downstream pipeline.
-func pollDeployHelmJob(client *http.Client, gitlabURI, gitlabToken, projectPath string, downstreamPipelineID int, serviceName string) (pollResult, error) {
-	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, downstreamPipelineID)
-	body, err := gitlabGet(client, jobsURL, gitlabToken)
-	if err != nil {
-		return pollContinue, fmt.Errorf("failed to check downstream jobs for %s: %v", serviceName, err)
+		return pollContinue, fmt.Errorf("failed to check jobs for %s: %v", serviceName, err)
 	}
 
 	var jobs []JobResponse
-	if err := json.Unmarshal(body, &jobs); err != nil {
-		return pollContinue, fmt.Errorf("failed to parse downstream jobs for %s: %v", serviceName, err)
+	if err := json.Unmarshal(jobsBody, &jobs); err != nil {
+		return pollContinue, fmt.Errorf("failed to parse jobs for %s: %v", serviceName, err)
 	}
 
 	for _, job := range jobs {
@@ -715,11 +521,12 @@ func pollDeployHelmJob(client *http.Client, gitlabURI, gitlabToken, projectPath 
 				return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" %s for %s", job.Status, serviceName)}
 			default:
 				fmt.Printf("  Job \"deploy helm\" for %s is %s...\n", serviceName, job.Status)
+				return pollContinue, nil
 			}
-			return pollContinue, nil
 		}
 	}
 
-	fmt.Printf("  Waiting for job \"deploy helm\" to appear in downstream pipeline for %s...\n", serviceName)
+	// "deploy helm" job not found yet
+	fmt.Printf("  Pipeline for %s is %s, waiting for \"deploy helm\" job...\n", serviceName, pipelineResp.Status)
 	return pollContinue, nil
 }

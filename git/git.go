@@ -375,6 +375,19 @@ func GetLastTagInBranch(dir string, branchName string) (string, error) {
 		}
 	}
 
+	// Try with [0-9]* pattern (plain version format like 18.0.0)
+	cmd = exec.Command("git", "tag", "--merged", fmt.Sprintf("origin/%s", branchName), "[0-9]*")
+	cmd.Dir = dir
+	output, err = cmd.CombinedOutput()
+	if err == nil && len(output) > 0 {
+		tags := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, tag := range tags {
+			if tag != "" && !contains(allTags, tag) {
+				allTags = append(allTags, tag)
+			}
+		}
+	}
+
 	if len(allTags) == 0 {
 		return "", fmt.Errorf("no tags found in branch %s", branchName)
 	}

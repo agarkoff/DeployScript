@@ -19,19 +19,17 @@ import (
 func main() {
 	// Parse command line arguments
 	var (
-		helmNamespace      string
+		namespaceStr       string
 		directory          string
 		versionStr         string
 		mavenCachePath     string
 		pomPropertyPattern string
 		configFile         string
-		runJob             string
 		continueMode       bool
 	)
 
-	flag.StringVar(&helmNamespace, "namespace", "", "Helm namespace for deployment (required)")
-	flag.StringVar(&helmNamespace, "n", "", "Helm namespace for deployment (shorthand)")
-	flag.StringVar(&runJob, "run-job", "", "Name of manual/delayed job to trigger after deploy service (optional)")
+	flag.StringVar(&namespaceStr, "namespace", "", "Helm namespace(s) for deployment, comma-separated (required)")
+	flag.StringVar(&namespaceStr, "n", "", "Helm namespace(s) for deployment, comma-separated (shorthand)")
 	flag.BoolVar(&continueMode, "continue", false, "Continue deployment: skip build phases, re-run only failed/missing pipelines")
 	flag.StringVar(&directory, "directory", "", "Base directory for services (required unless --continue)")
 	flag.StringVar(&directory, "d", "", "Base directory for services (shorthand)")
@@ -58,15 +56,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -pom-property-pattern, -p string\n")
 		fmt.Fprintf(os.Stderr, "        Pattern to match properties in POM files for version update (e.g. proezd)\n")
 		fmt.Fprintf(os.Stderr, "  -namespace, -n string\n")
-		fmt.Fprintf(os.Stderr, "        Helm namespace for deployment (e.g. production, staging, test)\n")
+		fmt.Fprintf(os.Stderr, "        Helm namespace(s) for deployment, comma-separated (e.g. test,prod)\n")
 		fmt.Fprintf(os.Stderr, "\nOptional:\n")
-		fmt.Fprintf(os.Stderr, "  -run-job string\n")
-		fmt.Fprintf(os.Stderr, "        Name of manual/delayed job to trigger after deploy service (e.g. migrate)\n")
 		fmt.Fprintf(os.Stderr, "  -continue\n")
 		fmt.Fprintf(os.Stderr, "        Continue deployment: skip build phases, re-run only failed/missing pipelines\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  %s -config deploy.yaml -directory /path/to/services -version 123 -maven-cache-path ru/gov/pfr/ecp/apso/proezd -pom-property-pattern proezd -namespace production\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -c deploy.yaml -v 123 -n production --continue\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -c deploy.yaml -v 123 -n test,prod --continue\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -80,8 +76,20 @@ func main() {
 		log.Fatal("Error: -version parameter is required\n\nUse -h for help")
 	}
 
-	if helmNamespace == "" {
+	if namespaceStr == "" {
 		log.Fatal("Error: -namespace parameter is required\n\nUse -h for help")
+	}
+
+	// Parse comma-separated namespaces
+	var namespaces []string
+	for _, ns := range strings.Split(namespaceStr, ",") {
+		ns = strings.TrimSpace(ns)
+		if ns != "" {
+			namespaces = append(namespaces, ns)
+		}
+	}
+	if len(namespaces) == 0 {
+		log.Fatal("Error: -namespace parameter must contain at least one namespace\n\nUse -h for help")
 	}
 
 	if !continueMode {
@@ -113,7 +121,7 @@ func main() {
 		log.Fatalf("Failed to read config: %v", err)
 	}
 
-	tagName := fmt.Sprintf("release-%d.0.0", version)
+	tagName := fmt.Sprintf("%d.0.0", version)
 
 	if continueMode {
 		// Continue mode: skip build phases, re-run failed/missing pipelines
@@ -121,15 +129,12 @@ func main() {
 		fmt.Printf("Config File: %s\n", configFile)
 		fmt.Printf("Version: %d\n", version)
 		fmt.Printf("Tag: %s\n", tagName)
-		fmt.Printf("Namespace: %s\n", helmNamespace)
-		if runJob != "" {
-			fmt.Printf("Run Job: %s\n", runJob)
-		}
+		fmt.Printf("Namespaces: %s\n", strings.Join(namespaces, ", "))
 		fmt.Println("===========================\n")
 
 		fmt.Println("Checking pipeline statuses and re-running failed/missing pipelines...")
 
-		if err := gitlab.ContinuePipelinesFromConfig(cfg, tagName, helmNamespace, runJob); err != nil {
+		if err := gitlab.ContinuePipelinesFromConfig(cfg, tagName, namespaces); err != nil {
 			log.Fatalf("Failed to continue deployment: %v", err)
 		}
 
@@ -187,10 +192,7 @@ func main() {
 	fmt.Printf("Version: %d\n", version)
 	fmt.Printf("Maven Cache Path: %s\n", mavenCachePath)
 	fmt.Printf("POM Property Pattern: %s\n", pomPropertyPattern)
-	fmt.Printf("Namespace: %s\n", helmNamespace)
-	if runJob != "" {
-		fmt.Printf("Run Job: %s\n", runJob)
-	}
+	fmt.Printf("Namespaces: %s\n", strings.Join(namespaces, ", "))
 	fmt.Printf("Services: %d\n", len(services))
 	fmt.Println("================================\n")
 
@@ -374,7 +376,7 @@ func main() {
 	// Phase 10: Create GitLab pipelines
 	fmt.Println("\nPhase 10: Creating GitLab pipelines...")
 
-	if err := gitlab.CreatePipelinesFromConfig(cfg, tagName, helmNamespace, runJob); err != nil {
+	if err := gitlab.CreatePipelinesFromConfig(cfg, tagName, namespaces); err != nil {
 		log.Fatalf("Failed to create GitLab pipelines: %v", err)
 	}
 
