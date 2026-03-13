@@ -33,6 +33,7 @@ type PipelineResponse struct {
 type JobResponse struct {
 	ID     int    `json:"id"`
 	Name   string `json:"name"`
+	Stage  string `json:"stage"`
 	Status string `json:"status"`
 }
 
@@ -243,6 +244,7 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 	}
 
 	// Find pipeline matching HELM_NAMESPACE variable
+	var runningInfo pipelineCheckInfo
 	for _, pipeline := range pipelines {
 		varsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/variables",
 			gitlabURI, projectPath, pipeline.ID)
@@ -272,48 +274,30 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 			continue
 		}
 
-		// Found matching pipeline — check "deploy helm" job directly
-		jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100",
-			gitlabURI, projectPath, pipeline.ID)
-
-		jobsBody, err := gitlabGet(client, jobsURL, gitlabToken)
-		if err != nil {
-			return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to check jobs: %v", err)
-		}
-
-		var jobs []JobResponse
-		if err := json.Unmarshal(jobsBody, &jobs); err != nil {
-			return pipelineCheckInfo{result: pipelineNeedsRerun}, fmt.Errorf("failed to parse jobs: %v", err)
-		}
-
-		for _, job := range jobs {
-			if job.Name == "deploy helm" {
-				switch job.Status {
-				case "success":
-					return pipelineCheckInfo{result: pipelineSuccess}, nil
-				case "running", "pending", "created":
-					fmt.Printf("  Pipeline %d for %s: deploy helm is %s, waiting...\n", pipeline.ID, serviceName, job.Status)
-					return pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID}, nil
-				default:
-					fmt.Printf("  Pipeline %d for %s: deploy helm is %s\n", pipeline.ID, serviceName, job.Status)
-					return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
-				}
-			}
-		}
-
-		// No "deploy helm" job yet — check pipeline status
+		// Found matching pipeline — check if all stages completed (success/warning)
 		switch pipeline.Status {
+		case "success", "warning":
+			fmt.Printf("  Found successful pipeline %d for %s with HELM_NAMESPACE=%s (status: %s)\n", pipeline.ID, serviceName, helmNamespace, pipeline.Status)
+			return pipelineCheckInfo{result: pipelineSuccess}, nil
 		case "running", "pending", "created":
-			fmt.Printf("  Pipeline %d for %s is %s (no deploy helm job yet), waiting...\n", pipeline.ID, serviceName, pipeline.Status)
-			return pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID}, nil
+			// Remember the first running pipeline, but keep looking for a successful one
+			if runningInfo.pipelineID == 0 {
+				runningInfo = pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID}
+			}
 		default:
-			fmt.Printf("  Pipeline %d for %s is %s, no deploy helm job found\n", pipeline.ID, serviceName, pipeline.Status)
-			return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
+			// failed/canceled — skip, check remaining pipelines
+			fmt.Printf("  Pipeline %d for %s is %s, checking other pipelines...\n", pipeline.ID, serviceName, pipeline.Status)
 		}
 	}
 
-	// No pipeline matched HELM_NAMESPACE
-	fmt.Printf("  No pipeline found for %s on %s with HELM_NAMESPACE=%s in last 24h\n", serviceName, ref, helmNamespace)
+	// No successful pipeline found — but maybe one is still running
+	if runningInfo.pipelineID != 0 {
+		fmt.Printf("  No successful pipeline found for %s, but pipeline %d is still running, waiting...\n", serviceName, runningInfo.pipelineID)
+		return runningInfo, nil
+	}
+
+	// No matching pipelines at all, or all failed
+	fmt.Printf("  No successful pipeline found for %s on %s with HELM_NAMESPACE=%s in last 24h\n", serviceName, ref, helmNamespace)
 	return pipelineCheckInfo{result: pipelineNeedsRerun}, nil
 }
 
@@ -511,6 +495,7 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 		return pollContinue, fmt.Errorf("failed to parse jobs for %s: %v", serviceName, err)
 	}
 
+	// Check "deploy helm" job first
 	for _, job := range jobs {
 		if job.Name == "deploy helm" {
 			switch job.Status {
@@ -526,7 +511,87 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 		}
 	}
 
-	// "deploy helm" job not found yet
-	fmt.Printf("  Pipeline for %s is %s, waiting for \"deploy helm\" job...\n", serviceName, pipelineResp.Status)
+	// No "deploy helm" job — fall back to checking "deploy" stage jobs
+	result, termErr := pollDeployStage(jobs, serviceName)
+	if result == pollSuccess || termErr != nil {
+		return result, termErr
+	}
+
+	// No deploy stage jobs found yet
+	fmt.Printf("  Pipeline for %s is %s, waiting for deploy jobs...\n", serviceName, pipelineResp.Status)
+	return pollContinue, nil
+}
+
+// checkDeployStageStatus checks all jobs in the "deploy" stage.
+// Returns (result, true) if deploy stage jobs were found, (_, false) otherwise.
+// Success = all jobs are "success" or "warning". Any failed/canceled = needsRerun.
+// Any running/pending/created = running.
+func checkDeployStageStatus(jobs []JobResponse, pipelineID int, serviceName string) (pipelineCheckInfo, bool) {
+	var deployJobs []JobResponse
+	for _, job := range jobs {
+		if job.Stage == "deploy" {
+			deployJobs = append(deployJobs, job)
+		}
+	}
+
+	if len(deployJobs) == 0 {
+		return pipelineCheckInfo{}, false
+	}
+
+	allDone := true
+	for _, job := range deployJobs {
+		switch job.Status {
+		case "success", "warning":
+			// ok
+		case "failed", "canceled":
+			fmt.Printf("  Pipeline %d for %s: deploy stage job \"%s\" is %s\n", pipelineID, serviceName, job.Name, job.Status)
+			return pipelineCheckInfo{result: pipelineNeedsRerun}, true
+		default:
+			allDone = false
+		}
+	}
+
+	if allDone {
+		fmt.Printf("  Pipeline %d for %s: all deploy stage jobs completed successfully\n", pipelineID, serviceName)
+		return pipelineCheckInfo{result: pipelineSuccess}, true
+	}
+
+	fmt.Printf("  Pipeline %d for %s: deploy stage jobs still running, waiting...\n", pipelineID, serviceName)
+	return pipelineCheckInfo{result: pipelineRunning, pipelineID: pipelineID}, true
+}
+
+// pollDeployStage checks all jobs in the "deploy" stage during polling.
+// Returns (pollSuccess, nil) if all done, (pollContinue, terminalError) on failure,
+// (pollContinue, nil) if still running or no deploy jobs found.
+func pollDeployStage(jobs []JobResponse, serviceName string) (pollResult, error) {
+	var deployJobs []JobResponse
+	for _, job := range jobs {
+		if job.Stage == "deploy" {
+			deployJobs = append(deployJobs, job)
+		}
+	}
+
+	if len(deployJobs) == 0 {
+		return pollContinue, nil
+	}
+
+	allDone := true
+	for _, job := range deployJobs {
+		switch job.Status {
+		case "success", "warning":
+			// ok
+		case "failed", "canceled":
+			return pollContinue, &terminalError{fmt.Sprintf("deploy stage job \"%s\" %s for %s", job.Name, job.Status, serviceName)}
+		default:
+			allDone = false
+		}
+	}
+
+	if allDone {
+		fmt.Printf("  %s✓ All deploy stage jobs completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
+		return pollSuccess, nil
+	}
+
+	fmt.Printf("  Deploy stage jobs for %s still running...\n", serviceName)
 	return pollContinue, nil
 }
