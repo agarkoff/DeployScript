@@ -57,42 +57,42 @@ sequential:
     directory: glk/person-benefit-category-knd
     gitlab_project: ecp/skl/glk/person-benefit-category-knd
 
+  - name: skl-referral-paperwork-service
+    directory: skl-referral-paperwork-service
+    gitlab_project: ecp/skl/skl-referral-paperwork-service
+
 # Grouped services (executed in parallel within each group)
 groups:
   # Backend services group
   bo:
-    - name: skl-referral-paperwork-service
-      directory: skl-referral-paperwork-service
-      gitlab_project: ecp/proezd/skl-referral-paperwork-service
-
     - name: skl-decision-bo
       directory: skl-decision-bo
-      gitlab_project: ecp/proezd/skl-decision-bo
+      gitlab_project: ecp/skl/skl-decision-bo
 
     - name: skl-statement-bo
       directory: skl-statement-bo
-      gitlab_project: ecp/proezd/skl-statement-bo
+      gitlab_project: ecp/skl/skl-statement-bo
 
     - name: skl-application-bo
       directory: skl-application-bo
-      gitlab_project: ecp/proezd/skl-application-bo
+      gitlab_project: ecp/skl/skl-application-bo
 
     - name: skl-contract-bo
       directory: skl-contract-bo
-      gitlab_project: ecp/proezd/skl-contract-bo
+      gitlab_project: ecp/skl/skl-contract-bo
 
     - name: skl-act-bo
       directory: skl-act-bo
-      gitlab_project: ecp/proezd/skl-act-bo
+      gitlab_project: ecp/skl/skl-act-bo
 
     - name: skl-contract-evs-service
       directory: skl-contract-evs-service
-      gitlab_project: ecp/proezd/skl-contract-evs-service
+      gitlab_project: ecp/skl/skl-contract-evs-service
 
     - name: skl-camunda-service
       directory: skl-camunda-service
-      gitlab_project: ecp/proezd/skl-camunda-service
+      gitlab_project: ecp/skl/skl-camunda-service
 
     - name: skl
       directory: skl
-      gitlab_project: ecp/proezd/skl
+      gitlab_project: ecp/skl/skl

@@ -32,10 +32,16 @@ type PipelineResponse struct {
 
 // JobResponse represents a GitLab pipeline job
 type JobResponse struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Stage  string `json:"stage"`
-	Status string `json:"status"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Stage        string `json:"stage"`
+	Status       string `json:"status"`
+	AllowFailure bool   `json:"allow_failure"`
+}
+
+// isJobFailed returns true if a job has failed and is NOT allowed to fail
+func isJobFailed(job JobResponse) bool {
+	return (job.Status == "failed" || job.Status == "canceled") && !job.AllowFailure
 }
 
 // PipelineVariable represents a GitLab pipeline variable
@@ -172,7 +178,7 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, namespaces []stri
 						continue
 					}
 
-					if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID); err != nil {
+					if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID, namespace); err != nil {
 						errMsg := fmt.Sprintf("pipeline failed for %s (namespace: %s): %v", svc.Name, namespace, err)
 						fmt.Printf("  \033[31m✗ %s\033[0m\n", errMsg)
 						mu.Lock()
@@ -273,7 +279,7 @@ func continueNamespace(cfg *config.Config, client *http.Client, gitlabURI, gitla
 			if info.webURL != "" {
 				fmt.Printf("    %s\n", info.webURL)
 			}
-			return waitForPipelineForService(service, gitlabURI, gitlabToken, info.pipelineID)
+			return waitForPipelineForService(service, gitlabURI, gitlabToken, info.pipelineID, namespace)
 
 		default: // pipelineNeedsRerun
 			fmt.Printf("\n%sRe-running pipeline for %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
@@ -281,7 +287,7 @@ func continueNamespace(cfg *config.Config, client *http.Client, gitlabURI, gitla
 			if err != nil {
 				return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
 			}
-			return waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID)
+			return waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID, namespace)
 		}
 	}
 
@@ -438,7 +444,7 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 					deploySkipped := false
 					for _, job := range jobs {
 						if job.Name == "deploy helm" {
-							if job.Status == "skipped" || job.Status == "failed" || job.Status == "canceled" {
+							if job.Status == "skipped" || isJobFailed(job) {
 								deploySkipped = true
 								fmt.Printf("  Pipeline %d for %s: deploy helm job is %s, treating as failed\n", pipeline.ID, serviceName, job.Status)
 							}
@@ -486,13 +492,13 @@ func createPipelineForService(service config.Service, gitlabURI, gitlabToken, re
 }
 
 // waitForPipelineForService waits for a pipeline for config.Service
-func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int) error {
+func waitForPipelineForService(service config.Service, gitlabURI, gitlabToken string, pipelineID int, namespace string) error {
 	gitlabService := Service{
 		Name:          service.Name,
 		Directory:     service.Directory,
 		GitlabProject: service.GitlabProject,
 	}
-	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID)
+	return waitForPipeline(gitlabService, gitlabURI, gitlabToken, pipelineID, namespace)
 }
 
 // createPipeline creates a single pipeline with HELM_NAMESPACE variable
@@ -591,7 +597,7 @@ func (e *terminalError) Error() string {
 
 // waitForPipeline waits for a pipeline to complete by polling the pipeline status
 // and the "deploy helm" job directly.
-func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int) error {
+func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID int, namespace string) error {
 	projectPath := url.QueryEscape(service.GitlabProject)
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -604,7 +610,7 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 	var firstErrorTime time.Time
 
 	for {
-		result, err := pollPipeline(client, gitlabURI, gitlabToken, projectPath, pipelineID, service.Name)
+		result, err := pollPipeline(client, gitlabURI, gitlabToken, projectPath, pipelineID, service.Name, namespace)
 
 		if result == pollSuccess {
 			return nil
@@ -639,7 +645,7 @@ func waitForPipeline(service Service, gitlabURI, gitlabToken string, pipelineID 
 // Returns pollSuccess when "deploy helm" succeeds.
 // Returns terminalError when pipeline or "deploy helm" job fails/cancels.
 // Returns pollContinue to keep polling.
-func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, serviceName string) (pollResult, error) {
+func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath string, pipelineID int, serviceName, namespace string) (pollResult, error) {
 	// Check pipeline status
 	pipelineURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d", gitlabURI, projectPath, pipelineID)
 	body, err := gitlabGet(client, pipelineURL, gitlabToken)
@@ -673,37 +679,37 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 		if job.Name == "deploy helm" {
 			switch job.Status {
 			case "success":
-				fmt.Printf("  %s✓ Job \"deploy helm\" completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
+				fmt.Printf("  %s✓ Job \"deploy helm\" completed successfully for %s (%s)%s\n", colorGreen, serviceName, namespace, colorReset)
 				return pollSuccess, nil
 			case "failed", "canceled", "skipped":
-				return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" %s for %s", job.Status, serviceName)}
+				return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" %s for %s (%s)", job.Status, serviceName, namespace)}
 			case "created", "waiting_for_resource", "pending":
 				// deploy helm hasn't started — if pipeline already failed, it will never start
 				if pipelineFailed || hasFailedJobs(jobs, job.Stage) {
-					return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" is %s but earlier jobs have failed for %s", job.Status, serviceName)}
+					return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" is %s but earlier jobs have failed for %s (%s)", job.Status, serviceName, namespace)}
 				}
-				fmt.Printf("  Job \"deploy helm\" for %s is %s...\n", serviceName, job.Status)
+				fmt.Printf("  Job \"deploy helm\" for %s (%s) is %s...\n", serviceName, namespace, job.Status)
 				return pollContinue, nil
 			default:
-				fmt.Printf("  Job \"deploy helm\" for %s is %s...\n", serviceName, job.Status)
+				fmt.Printf("  Job \"deploy helm\" for %s (%s) is %s...\n", serviceName, namespace, job.Status)
 				return pollContinue, nil
 			}
 		}
 	}
 
 	// No "deploy helm" job — fall back to checking "deploy" stage jobs
-	result, termErr := pollDeployStage(jobs, serviceName)
+	result, termErr := pollDeployStage(jobs, serviceName, namespace)
 	if result == pollSuccess || termErr != nil {
 		return result, termErr
 	}
 
 	// Pipeline failed but no deploy jobs found at all
 	if pipelineFailed {
-		return pollContinue, &terminalError{fmt.Sprintf("pipeline %s for %s (no deploy jobs found)", pipelineResp.Status, serviceName)}
+		return pollContinue, &terminalError{fmt.Sprintf("pipeline %s for %s (%s, no deploy jobs found)", pipelineResp.Status, serviceName, namespace)}
 	}
 
 	// No deploy stage jobs found yet
-	fmt.Printf("  Pipeline for %s is %s, waiting for deploy jobs...\n", serviceName, pipelineResp.Status)
+	fmt.Printf("  Pipeline for %s (%s) is %s, waiting for deploy jobs...\n", serviceName, namespace, pipelineResp.Status)
 	return pollContinue, nil
 }
 
@@ -725,15 +731,14 @@ func checkDeployStageStatus(jobs []JobResponse, pipelineID int, serviceName stri
 
 	allDone := true
 	for _, job := range deployJobs {
-		switch job.Status {
-		case "success", "warning":
-			// ok
-		case "failed", "canceled", "skipped":
+		if job.Status == "success" || job.Status == "warning" || (job.Status == "failed" && job.AllowFailure) {
+			continue // ok or allowed to fail
+		}
+		if job.Status == "failed" || job.Status == "canceled" || job.Status == "skipped" {
 			fmt.Printf("  Pipeline %d for %s: deploy stage job \"%s\" is %s\n", pipelineID, serviceName, job.Name, job.Status)
 			return pipelineCheckInfo{result: pipelineNeedsRerun}, true
-		default:
-			allDone = false
 		}
+		allDone = false
 	}
 
 	if allDone {
@@ -748,7 +753,7 @@ func checkDeployStageStatus(jobs []JobResponse, pipelineID int, serviceName stri
 // pollDeployStage checks all jobs in the "deploy" stage during polling.
 // Returns (pollSuccess, nil) if all done, (pollContinue, terminalError) on failure,
 // (pollContinue, nil) if still running or no deploy jobs found.
-func pollDeployStage(jobs []JobResponse, serviceName string) (pollResult, error) {
+func pollDeployStage(jobs []JobResponse, serviceName, namespace string) (pollResult, error) {
 	var deployJobs []JobResponse
 	for _, job := range jobs {
 		if job.Stage == "deploy" && !ignoredJobs[job.Name] {
@@ -762,22 +767,21 @@ func pollDeployStage(jobs []JobResponse, serviceName string) (pollResult, error)
 
 	allDone := true
 	for _, job := range deployJobs {
-		switch job.Status {
-		case "success", "warning":
-			// ok
-		case "failed", "canceled", "skipped":
-			return pollContinue, &terminalError{fmt.Sprintf("deploy stage job \"%s\" %s for %s", job.Name, job.Status, serviceName)}
-		default:
-			allDone = false
+		if job.Status == "success" || job.Status == "warning" || (job.Status == "failed" && job.AllowFailure) {
+			continue // ok or allowed to fail
 		}
+		if job.Status == "failed" || job.Status == "canceled" || job.Status == "skipped" {
+			return pollContinue, &terminalError{fmt.Sprintf("deploy stage job \"%s\" %s for %s (%s)", job.Name, job.Status, serviceName, namespace)}
+		}
+		allDone = false
 	}
 
 	if allDone {
-		fmt.Printf("  %s✓ All deploy stage jobs completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
+		fmt.Printf("  %s✓ All deploy stage jobs completed successfully for %s (%s)%s\n", colorGreen, serviceName, namespace, colorReset)
 		return pollSuccess, nil
 	}
 
-	fmt.Printf("  Deploy stage jobs for %s still running...\n", serviceName)
+	fmt.Printf("  Deploy stage jobs for %s (%s) still running...\n", serviceName, namespace)
 	return pollContinue, nil
 }
 
@@ -793,7 +797,7 @@ func hasFailedJobs(jobs []JobResponse, targetStage string) bool {
 		if job.Stage == targetStage || ignoredJobs[job.Name] {
 			continue
 		}
-		if job.Status == "failed" || job.Status == "canceled" {
+		if isJobFailed(job) {
 			return true
 		}
 	}
