@@ -8,10 +8,12 @@ sequential:
   - name: proezd-common
     directory: proezd-common
     gitlab_project: ecp/proezd/proezd-common
+    is_library: true
 
   - name: proezd-api
     directory: proezd-api
     gitlab_project: ecp/proezd/proezd-api
+    is_library: true
 
   - name: proezd-rpu-adapter
     directory: proezd-rpu-adapter

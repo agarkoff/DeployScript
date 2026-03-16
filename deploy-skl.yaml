@@ -22,6 +22,7 @@ sequential:
   - name: skl-api
     directory: skl-api
     gitlab_project: ecp/skl/skl-api
+    is_library: true
 
   - name: skl-act-aggregate
     directory: skl-act-aggregate
@@ -48,15 +49,15 @@ sequential:
     gitlab_project: ecp/skl/skl-common
 
   - name: person-benefit-category-aggregate
-    directory: person-benefit-category-aggregate
+    directory: glk/person-benefit-category-aggregate
     gitlab_project: ecp/skl/glk/person-benefit-category-aggregate
 
   - name: person-benefit-category-bo
-    directory: person-benefit-category-bo
+    directory: glk/person-benefit-category-bo
     gitlab_project: ecp/skl/glk/person-benefit-category-bo
 
   - name: person-benefit-category-knd
-    directory: person-benefit-category-knd
+    directory: glk/person-benefit-category-knd
     gitlab_project: ecp/skl/glk/person-benefit-category-knd
 
 # Grouped services (executed in parallel within each group)

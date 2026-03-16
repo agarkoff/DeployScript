@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -49,8 +50,10 @@ const (
 	colorReset = "\033[0m"
 )
 
-// CreatePipelinesFromConfig creates GitLab pipelines for each namespace sequentially.
-// ALL services must succeed on namespace N before namespace N+1 begins.
+// CreatePipelinesFromConfig creates GitLab pipelines using a pipelined approach:
+// as soon as a service succeeds on namespace N, it starts on namespace N+1,
+// without waiting for other services to finish on namespace N.
+// Within a namespace, ordering is preserved: sequential services first, then groups in order.
 func CreatePipelinesFromConfig(cfg *config.Config, ref string, namespaces []string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
@@ -62,86 +65,146 @@ func CreatePipelinesFromConfig(cfg *config.Config, ref string, namespaces []stri
 		return fmt.Errorf("GITLAB_URI environment variable is not set")
 	}
 
-	for i, namespace := range namespaces {
-		isFirstNamespace := i == 0
-		fmt.Printf("\n%s=== Deploying to namespace: %s ===%s\n", colorBlue, namespace, colorReset)
+	// Build deployment phases: each sequential service is its own phase,
+	// each group is a phase with parallel services.
+	type deployPhase struct {
+		services []config.Service
+	}
 
-		// Process sequential services first
-		for _, service := range cfg.Sequential {
-			if service.IsLibrary && !isFirstNamespace {
-				fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", service.Name)
-				continue
-			}
+	var phases []deployPhase
+	for _, svc := range cfg.Sequential {
+		phases = append(phases, deployPhase{services: []config.Service{svc}})
+	}
 
-			fmt.Printf("\n%sStarting pipeline for sequential service: %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
+	var groupNames []string
+	for name := range cfg.Groups {
+		groupNames = append(groupNames, name)
+	}
+	sort.Strings(groupNames)
+	for _, name := range groupNames {
+		phases = append(phases, deployPhase{services: cfg.Groups[name]})
+	}
 
-			pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, namespace)
-			if err != nil {
-				return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
-			}
+	numPhases := len(phases)
+	numNS := len(namespaces)
 
-			if err := waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID); err != nil {
-				return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
+	// Synchronization channels:
+	// phaseDone[p][n] — closed when ALL services in phase p complete on namespace n
+	// svcDone[p][s][n] — closed when service s in phase p completes on namespace n
+	phaseDone := make([][]chan struct{}, numPhases)
+	svcDone := make([][][]chan struct{}, numPhases)
+	for p := 0; p < numPhases; p++ {
+		phaseDone[p] = make([]chan struct{}, numNS)
+		svcDone[p] = make([][]chan struct{}, len(phases[p].services))
+		for n := 0; n < numNS; n++ {
+			phaseDone[p][n] = make(chan struct{})
+		}
+		for s := 0; s < len(phases[p].services); s++ {
+			svcDone[p][s] = make([]chan struct{}, numNS)
+			for n := 0; n < numNS; n++ {
+				svcDone[p][s][n] = make(chan struct{})
 			}
 		}
+	}
 
-		// Process each group in sequence, but services within a group in parallel
-		for groupName, groupServices := range cfg.Groups {
-			// Filter out library services on non-first namespaces
-			var servicesToRun []config.Service
-			for _, svc := range groupServices {
-				if svc.IsLibrary && !isFirstNamespace {
-					fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", svc.Name)
-					continue
+	var mu sync.Mutex
+	var allErrors []string
+	var wg sync.WaitGroup
+
+	// Phase completion monitors: close phaseDone[p][n] when all services in phase finish
+	for p := 0; p < numPhases; p++ {
+		for n := 0; n < numNS; n++ {
+			wg.Add(1)
+			go func(p, n int) {
+				defer wg.Done()
+				for s := 0; s < len(phases[p].services); s++ {
+					<-svcDone[p][s][n]
 				}
-				servicesToRun = append(servicesToRun, svc)
-			}
+				close(phaseDone[p][n])
+			}(p, n)
+		}
+	}
 
-			if len(servicesToRun) == 0 {
-				continue
-			}
+	// Service goroutines: each service pipelines through namespaces
+	for p := 0; p < numPhases; p++ {
+		for s, svc := range phases[p].services {
+			wg.Add(1)
+			go func(p, s int, svc config.Service) {
+				defer wg.Done()
+				svcFailed := false
 
-			fmt.Printf("\n%sStarting pipelines for group: %s on tag: %s (namespace: %s)%s\n", colorBlue, groupName, ref, namespace, colorReset)
+				for n := 0; n < numNS; n++ {
+					namespace := namespaces[n]
 
-			var wg sync.WaitGroup
-			errors := make(chan error, len(servicesToRun))
+					// Library services deploy only to first namespace
+					if svc.IsLibrary && n > 0 {
+						fmt.Printf("  Skipping library service %s on %s (only first namespace)\n", svc.Name, namespace)
+						close(svcDone[p][s][n])
+						continue
+					}
 
-			for _, service := range servicesToRun {
-				wg.Add(1)
-				go func(svc config.Service) {
-					defer wg.Done()
+					// If service failed on a previous namespace, skip remaining
+					if svcFailed {
+						close(svcDone[p][s][n])
+						continue
+					}
+
+					// Wait for previous phase to finish on this namespace
+					if p > 0 {
+						<-phaseDone[p-1][n]
+					}
+					// Wait for this service to finish on previous namespace
+					if n > 0 {
+						<-svcDone[p][s][n-1]
+					}
+
+					fmt.Printf("\n%sStarting pipeline for %s on tag: %s (namespace: %s)%s\n", colorBlue, svc.Name, ref, namespace, colorReset)
 
 					pipelineID, err := createPipelineForService(svc, gitlabURI, gitlabToken, ref, namespace)
 					if err != nil {
-						errors <- fmt.Errorf("failed to create pipeline for %s: %v", svc.Name, err)
-						return
+						errMsg := fmt.Sprintf("failed to create pipeline for %s (namespace: %s): %v", svc.Name, namespace, err)
+						fmt.Printf("  \033[31m✗ %s\033[0m\n", errMsg)
+						mu.Lock()
+						allErrors = append(allErrors, errMsg)
+						mu.Unlock()
+						svcFailed = true
+						close(svcDone[p][s][n])
+						continue
 					}
 
 					if err := waitForPipelineForService(svc, gitlabURI, gitlabToken, pipelineID); err != nil {
-						errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
-						return
+						errMsg := fmt.Sprintf("pipeline failed for %s (namespace: %s): %v", svc.Name, namespace, err)
+						fmt.Printf("  \033[31m✗ %s\033[0m\n", errMsg)
+						mu.Lock()
+						allErrors = append(allErrors, errMsg)
+						mu.Unlock()
+						svcFailed = true
+						close(svcDone[p][s][n])
+						continue
 					}
-				}(service)
-			}
 
-			wg.Wait()
-			close(errors)
-
-			for err := range errors {
-				if err != nil {
-					return err
+					close(svcDone[p][s][n])
 				}
-			}
+			}(p, s, svc)
 		}
-
-		fmt.Printf("\n%s=== Namespace %s completed ===%s\n", colorGreen, namespace, colorReset)
 	}
 
+	wg.Wait()
+
+	if len(allErrors) > 0 {
+		fmt.Printf("\n\033[31m=== Failed pipelines ===\033[0m\n")
+		for _, e := range allErrors {
+			fmt.Printf("  \033[31m✗ %s\033[0m\n", e)
+		}
+		return fmt.Errorf("%d pipeline(s) failed", len(allErrors))
+	}
+
+	fmt.Printf("\n%s=== All namespaces deployed successfully ===%s\n", colorGreen, colorReset)
 	return nil
 }
 
-// ContinuePipelinesFromConfig checks pipeline statuses and re-runs failed/missing ones
-// for each namespace sequentially. Matches pipelines by ref + HELM_NAMESPACE variable.
+// ContinuePipelinesFromConfig checks pipeline statuses and re-runs failed/missing ones.
+// All namespaces are processed in parallel since continue mode recovers an existing deployment.
 func ContinuePipelinesFromConfig(cfg *config.Config, ref string, namespaces []string) error {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
@@ -155,91 +218,135 @@ func ContinuePipelinesFromConfig(cfg *config.Config, ref string, namespaces []st
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
+	var mu sync.Mutex
+	var allErrors []string
+
+	var nsWg sync.WaitGroup
 	for i, namespace := range namespaces {
-		isFirstNamespace := i == 0
-		fmt.Printf("\n%s=== Continuing deployment for namespace: %s ===%s\n", colorBlue, namespace, colorReset)
-
-		continueService := func(service config.Service) error {
-			info, err := checkServicePipelineStatus(client, gitlabURI, gitlabToken, service.GitlabProject, ref, service.Name, namespace)
-			if err != nil {
-				return fmt.Errorf("failed to check pipeline status for %s: %v", service.Name, err)
+		nsWg.Add(1)
+		go func(i int, namespace string) {
+			defer nsWg.Done()
+			errs := continueNamespace(cfg, client, gitlabURI, gitlabToken, ref, namespace, i == 0)
+			if len(errs) > 0 {
+				mu.Lock()
+				allErrors = append(allErrors, errs...)
+				mu.Unlock()
 			}
+		}(i, namespace)
+	}
+	nsWg.Wait()
 
-			switch info.result {
-			case pipelineSuccess:
-				fmt.Printf("  %s✓ %s already deployed successfully (namespace: %s), skipping%s\n", colorGreen, service.Name, namespace, colorReset)
-				return nil
-
-			case pipelineRunning:
-				fmt.Printf("  %sWaiting for existing pipeline %d for %s (namespace: %s)%s\n", colorBlue, info.pipelineID, service.Name, namespace, colorReset)
-				return waitForPipelineForService(service, gitlabURI, gitlabToken, info.pipelineID)
-
-			default: // pipelineNeedsRerun
-				fmt.Printf("\n%sRe-running pipeline for %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
-				pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, namespace)
-				if err != nil {
-					return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
-				}
-				return waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID)
-			}
+	if len(allErrors) > 0 {
+		fmt.Printf("\n\033[31m=== Failed pipelines ===\033[0m\n")
+		for _, e := range allErrors {
+			fmt.Printf("  \033[31m✗ %s\033[0m\n", e)
 		}
-
-		// Process sequential services first
-		for _, service := range cfg.Sequential {
-			if service.IsLibrary && !isFirstNamespace {
-				fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", service.Name)
-				continue
-			}
-			if err := continueService(service); err != nil {
-				return fmt.Errorf("pipeline failed for %s: %v", service.Name, err)
-			}
-		}
-
-		// Process each group in sequence, but services within a group in parallel
-		for groupName, groupServices := range cfg.Groups {
-			// Filter out library services on non-first namespaces
-			var servicesToRun []config.Service
-			for _, svc := range groupServices {
-				if svc.IsLibrary && !isFirstNamespace {
-					fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", svc.Name)
-					continue
-				}
-				servicesToRun = append(servicesToRun, svc)
-			}
-
-			if len(servicesToRun) == 0 {
-				continue
-			}
-
-			fmt.Printf("\n%sProcessing group: %s (namespace: %s)%s\n", colorBlue, groupName, namespace, colorReset)
-
-			var wg sync.WaitGroup
-			errors := make(chan error, len(servicesToRun))
-
-			for _, service := range servicesToRun {
-				wg.Add(1)
-				go func(svc config.Service) {
-					defer wg.Done()
-					if err := continueService(svc); err != nil {
-						errors <- fmt.Errorf("pipeline failed for %s: %v", svc.Name, err)
-					}
-				}(service)
-			}
-
-			wg.Wait()
-			close(errors)
-
-			for err := range errors {
-				if err != nil {
-					return err
-				}
-			}
-		}
-
-		fmt.Printf("\n%s=== Namespace %s completed ===%s\n", colorGreen, namespace, colorReset)
+		return fmt.Errorf("%d pipeline(s) failed across namespaces", len(allErrors))
 	}
 
 	return nil
+}
+
+// continueNamespace processes a single namespace in continue mode.
+// Returns a list of error messages for failed services.
+func continueNamespace(cfg *config.Config, client *http.Client, gitlabURI, gitlabToken, ref, namespace string, isFirstNamespace bool) []string {
+	fmt.Printf("\n%s=== Continuing deployment for namespace: %s ===%s\n", colorBlue, namespace, colorReset)
+
+	var errors []string
+
+	continueService := func(service config.Service) error {
+		info, err := checkServicePipelineStatus(client, gitlabURI, gitlabToken, service.GitlabProject, ref, service.Name, namespace)
+		if err != nil {
+			return fmt.Errorf("failed to check pipeline status for %s: %v", service.Name, err)
+		}
+
+		switch info.result {
+		case pipelineSuccess:
+			fmt.Printf("  %s✓ %s already deployed successfully (namespace: %s), skipping%s\n", colorGreen, service.Name, namespace, colorReset)
+			if info.webURL != "" {
+				fmt.Printf("    %s\n", info.webURL)
+			}
+			return nil
+
+		case pipelineRunning:
+			fmt.Printf("  %sWaiting for existing pipeline %d for %s (namespace: %s)%s\n", colorBlue, info.pipelineID, service.Name, namespace, colorReset)
+			if info.webURL != "" {
+				fmt.Printf("    %s\n", info.webURL)
+			}
+			return waitForPipelineForService(service, gitlabURI, gitlabToken, info.pipelineID)
+
+		default: // pipelineNeedsRerun
+			fmt.Printf("\n%sRe-running pipeline for %s on tag: %s (namespace: %s)%s\n", colorBlue, service.Name, ref, namespace, colorReset)
+			pipelineID, err := createPipelineForService(service, gitlabURI, gitlabToken, ref, namespace)
+			if err != nil {
+				return fmt.Errorf("failed to create pipeline for %s: %v", service.Name, err)
+			}
+			return waitForPipelineForService(service, gitlabURI, gitlabToken, pipelineID)
+		}
+	}
+
+	// Process sequential services first
+	for _, service := range cfg.Sequential {
+		if service.IsLibrary && !isFirstNamespace {
+			fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", service.Name)
+			continue
+		}
+		if err := continueService(service); err != nil {
+			errMsg := fmt.Sprintf("[%s] %s: %v", namespace, service.Name, err)
+			fmt.Printf("  \033[31m✗ %s\033[0m\n", errMsg)
+			errors = append(errors, errMsg)
+		}
+	}
+
+	// Process each group in sequence, but services within a group in parallel
+	for groupName, groupServices := range cfg.Groups {
+		var servicesToRun []config.Service
+		for _, svc := range groupServices {
+			if svc.IsLibrary && !isFirstNamespace {
+				fmt.Printf("  Skipping library service %s (only deployed to first namespace)\n", svc.Name)
+				continue
+			}
+			servicesToRun = append(servicesToRun, svc)
+		}
+
+		if len(servicesToRun) == 0 {
+			continue
+		}
+
+		fmt.Printf("\n%sProcessing group: %s (namespace: %s)%s\n", colorBlue, groupName, namespace, colorReset)
+
+		var wg sync.WaitGroup
+		groupErrors := make(chan error, len(servicesToRun))
+
+		for _, service := range servicesToRun {
+			wg.Add(1)
+			go func(svc config.Service) {
+				defer wg.Done()
+				if err := continueService(svc); err != nil {
+					groupErrors <- fmt.Errorf("%s: %v", svc.Name, err)
+				}
+			}(service)
+		}
+
+		wg.Wait()
+		close(groupErrors)
+
+		for err := range groupErrors {
+			if err != nil {
+				errMsg := fmt.Sprintf("[%s] %v", namespace, err)
+				fmt.Printf("  \033[31m✗ %s\033[0m\n", errMsg)
+				errors = append(errors, errMsg)
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		fmt.Printf("\n\033[31m=== Namespace %s completed with errors ===\033[0m\n", namespace)
+	} else {
+		fmt.Printf("\n%s=== Namespace %s completed ===%s\n", colorGreen, namespace, colorReset)
+	}
+
+	return errors
 }
 
 // pipelineCheckResult represents the result of checking a service's pipeline status
@@ -254,7 +361,8 @@ const (
 // pipelineCheckInfo holds the result of a pipeline status check
 type pipelineCheckInfo struct {
 	result     pipelineCheckResult
-	pipelineID int // set when result is pipelineRunning
+	pipelineID int    // set when result is pipelineRunning
+	webURL     string // set when result is pipelineSuccess
 }
 
 // checkServicePipelineStatus checks the latest pipeline status for a service,
@@ -317,11 +425,38 @@ func checkServicePipelineStatus(client *http.Client, gitlabURI, gitlabToken, git
 		switch pipeline.Status {
 		case "success", "warning":
 			fmt.Printf("  Found successful pipeline %d for %s with HELM_NAMESPACE=%s (status: %s)\n", pipeline.ID, serviceName, helmNamespace, pipeline.Status)
-			return pipelineCheckInfo{result: pipelineSuccess}, nil
+			return pipelineCheckInfo{result: pipelineSuccess, webURL: pipeline.WebURL}, nil
 		case "running", "pending", "created":
+			// Check deploy jobs before assuming pipeline is still viable
+			jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100",
+				gitlabURI, projectPath, pipeline.ID)
+			jobsBody, jobsErr := gitlabGet(client, jobsURL, gitlabToken)
+			if jobsErr == nil {
+				var jobs []JobResponse
+				if json.Unmarshal(jobsBody, &jobs) == nil {
+					// Check if "deploy helm" job is skipped/failed/canceled
+					deploySkipped := false
+					for _, job := range jobs {
+						if job.Name == "deploy helm" {
+							if job.Status == "skipped" || job.Status == "failed" || job.Status == "canceled" {
+								deploySkipped = true
+								fmt.Printf("  Pipeline %d for %s: deploy helm job is %s, treating as failed\n", pipeline.ID, serviceName, job.Status)
+							}
+							break
+						}
+					}
+					if deploySkipped {
+						break // treat as failed, check next pipeline
+					}
+					// Also check deploy stage jobs via existing helper
+					if info, found := checkDeployStageStatus(jobs, pipeline.ID, serviceName); found && info.result == pipelineNeedsRerun {
+						break // deploy stage has failed/skipped jobs
+					}
+				}
+			}
 			// Remember the first running pipeline, but keep looking for a successful one
 			if runningInfo.pipelineID == 0 {
-				runningInfo = pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID}
+				runningInfo = pipelineCheckInfo{result: pipelineRunning, pipelineID: pipeline.ID, webURL: pipeline.WebURL}
 			}
 		default:
 			// failed/canceled — skip, check remaining pipelines
@@ -517,12 +652,9 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 		return pollContinue, fmt.Errorf("failed to parse pipeline response for %s: %v", serviceName, err)
 	}
 
-	// Terminal pipeline states
-	if pipelineResp.Status == "failed" || pipelineResp.Status == "canceled" {
-		return pollContinue, &terminalError{fmt.Sprintf("pipeline %s for %s", pipelineResp.Status, serviceName)}
-	}
-
-	// Check "deploy helm" job
+	// Get jobs first — deploy helm success takes priority over pipeline-level status,
+	// because non-critical jobs (e.g. "notify deploy") may fail the pipeline
+	// even though the actual deployment succeeded.
 	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, pipelineID)
 	jobsBody, err := gitlabGet(client, jobsURL, gitlabToken)
 	if err != nil {
@@ -534,6 +666,8 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 		return pollContinue, fmt.Errorf("failed to parse jobs for %s: %v", serviceName, err)
 	}
 
+	pipelineFailed := pipelineResp.Status == "failed" || pipelineResp.Status == "canceled"
+
 	// Check "deploy helm" job first
 	for _, job := range jobs {
 		if job.Name == "deploy helm" {
@@ -541,8 +675,15 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 			case "success":
 				fmt.Printf("  %s✓ Job \"deploy helm\" completed successfully for %s%s\n", colorGreen, serviceName, colorReset)
 				return pollSuccess, nil
-			case "failed", "canceled":
+			case "failed", "canceled", "skipped":
 				return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" %s for %s", job.Status, serviceName)}
+			case "created", "waiting_for_resource", "pending":
+				// deploy helm hasn't started — if pipeline already failed, it will never start
+				if pipelineFailed || hasFailedJobs(jobs, job.Stage) {
+					return pollContinue, &terminalError{fmt.Sprintf("job \"deploy helm\" is %s but earlier jobs have failed for %s", job.Status, serviceName)}
+				}
+				fmt.Printf("  Job \"deploy helm\" for %s is %s...\n", serviceName, job.Status)
+				return pollContinue, nil
 			default:
 				fmt.Printf("  Job \"deploy helm\" for %s is %s...\n", serviceName, job.Status)
 				return pollContinue, nil
@@ -554,6 +695,11 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 	result, termErr := pollDeployStage(jobs, serviceName)
 	if result == pollSuccess || termErr != nil {
 		return result, termErr
+	}
+
+	// Pipeline failed but no deploy jobs found at all
+	if pipelineFailed {
+		return pollContinue, &terminalError{fmt.Sprintf("pipeline %s for %s (no deploy jobs found)", pipelineResp.Status, serviceName)}
 	}
 
 	// No deploy stage jobs found yet
@@ -568,7 +714,7 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 func checkDeployStageStatus(jobs []JobResponse, pipelineID int, serviceName string) (pipelineCheckInfo, bool) {
 	var deployJobs []JobResponse
 	for _, job := range jobs {
-		if job.Stage == "deploy" {
+		if job.Stage == "deploy" && !ignoredJobs[job.Name] {
 			deployJobs = append(deployJobs, job)
 		}
 	}
@@ -582,7 +728,7 @@ func checkDeployStageStatus(jobs []JobResponse, pipelineID int, serviceName stri
 		switch job.Status {
 		case "success", "warning":
 			// ok
-		case "failed", "canceled":
+		case "failed", "canceled", "skipped":
 			fmt.Printf("  Pipeline %d for %s: deploy stage job \"%s\" is %s\n", pipelineID, serviceName, job.Name, job.Status)
 			return pipelineCheckInfo{result: pipelineNeedsRerun}, true
 		default:
@@ -605,7 +751,7 @@ func checkDeployStageStatus(jobs []JobResponse, pipelineID int, serviceName stri
 func pollDeployStage(jobs []JobResponse, serviceName string) (pollResult, error) {
 	var deployJobs []JobResponse
 	for _, job := range jobs {
-		if job.Stage == "deploy" {
+		if job.Stage == "deploy" && !ignoredJobs[job.Name] {
 			deployJobs = append(deployJobs, job)
 		}
 	}
@@ -619,7 +765,7 @@ func pollDeployStage(jobs []JobResponse, serviceName string) (pollResult, error)
 		switch job.Status {
 		case "success", "warning":
 			// ok
-		case "failed", "canceled":
+		case "failed", "canceled", "skipped":
 			return pollContinue, &terminalError{fmt.Sprintf("deploy stage job \"%s\" %s for %s", job.Name, job.Status, serviceName)}
 		default:
 			allDone = false
@@ -633,4 +779,23 @@ func pollDeployStage(jobs []JobResponse, serviceName string) (pollResult, error)
 
 	fmt.Printf("  Deploy stage jobs for %s still running...\n", serviceName)
 	return pollContinue, nil
+}
+
+// ignoredJobs contains job names that should not affect deployment logic
+var ignoredJobs = map[string]bool{
+	"notify deploy": true,
+}
+
+// hasFailedJobs checks if any job in stages before targetStage has failed or been canceled.
+// This detects situations where the deploy job will never start because a prerequisite failed.
+func hasFailedJobs(jobs []JobResponse, targetStage string) bool {
+	for _, job := range jobs {
+		if job.Stage == targetStage || ignoredJobs[job.Name] {
+			continue
+		}
+		if job.Status == "failed" || job.Status == "canceled" {
+			return true
+		}
+	}
+	return false
 }
