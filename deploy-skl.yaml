@@ -61,6 +61,10 @@ sequential:
     directory: skl-referral-paperwork-service
     gitlab_project: ecp/skl/skl-referral-paperwork-service
 
+  - name: skl-tech
+    directory: skl-tech
+    gitlab_project: ecp/skl/skl-tech
+
 # Grouped services (executed in parallel within each group)
 groups:
   # Backend services group
@@ -96,3 +100,7 @@ groups:
     - name: skl
       directory: skl
       gitlab_project: ecp/skl/skl
+
+    - name: gkl
+      directory: glk/glk
+      gitlab_project: ecp/skl/glk/glk
