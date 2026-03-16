@@ -22,7 +22,6 @@ type ArtifactExclusion struct {
 
 // Config represents the deploy configuration with new structure
 type Config struct {
-	TaskURLPrefix      string               `yaml:"task_url_prefix"`
 	SkipVersionUpdate  []ArtifactExclusion  `yaml:"skip_version_update"`
 	SkipProperties     []string             `yaml:"skip_properties"`
 	Sequential         []Service            `yaml:"sequential"`

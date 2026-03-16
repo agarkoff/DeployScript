@@ -1,8 +1,5 @@
 # Deploy configuration with grouped services
 
-# Task tracking system URL prefix (e.g., https://jira.company.com/browse/)
-task_url_prefix: https://srv-ecp-jira-01.bft.local/browse/
-
 # Grouped services (executed in parallel within each group)
 groups:
   # Migrate services group
