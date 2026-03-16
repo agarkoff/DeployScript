@@ -46,7 +46,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nRequired options:\n")
 		fmt.Fprintf(os.Stderr, "  -config, -c string\n")
-		fmt.Fprintf(os.Stderr, "        Path to YAML configuration file (e.g. deploy.yaml, deploy-migrate.yaml)\n")
+		fmt.Fprintf(os.Stderr, "        Path to YAML configuration file (e.g. deploy-proezd.yaml, deploy-skl.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  -directory, -d string\n")
 		fmt.Fprintf(os.Stderr, "        Base directory for services\n")
 		fmt.Fprintf(os.Stderr, "  -version, -v string\n")
