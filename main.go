@@ -226,12 +226,12 @@ func main() {
 		}
 	}
 
-	// Phase 2: Switch all to develop branch
-	fmt.Println("\nPhase 2: Switching to develop branch...")
+	// Phase 2: Switch all to master branch
+	fmt.Println("\nPhase 2: Switching to master branch...")
 	for _, service := range services {
 		fmt.Printf("  Switching service: %s\n", service)
-		if err := git.Checkout(serviceDirs[service], "develop"); err != nil {
-			log.Fatalf("Failed to checkout develop branch in %s: %v", service, err)
+		if err := git.Checkout(serviceDirs[service], "master"); err != nil {
+			log.Fatalf("Failed to checkout master branch in %s: %v", service, err)
 		}
 	}
 

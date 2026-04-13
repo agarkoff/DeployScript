@@ -64,7 +64,7 @@ export GITLAB_URI="https://gitlab.bft.local"
 ## Как работает полный деплой
 
 1. Проверка чистоты git
-2. Checkout develop + pull
+2. Checkout master + pull
 3. Обновление версий в pom.xml
 4. Создание веток `release-{version}` и тегов `{version}.0.0`
 5. Maven build (ожидает подтверждения перед push)
