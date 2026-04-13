@@ -65,6 +65,10 @@ sequential:
     directory: skl-tech
     gitlab_project: ecp/skl/skl-tech
 
+  - name: skl-graphql-config
+    directory: skl-graphql-config
+    gitlab_project: ecp/skl/skl-graphql-config
+
 # Grouped services (executed in parallel within each group)
 groups:
   # Backend services group
