@@ -21,10 +21,6 @@ sequential:
     gitlab_project: ecp/skl/skl-api
     is_library: true
 
-  - name: skl-act-aggregate
-    directory: skl-act-aggregate
-    gitlab_project: ecp/skl/skl-act-aggregate
-
   - name: skl-application-aggregate
     directory: skl-application-aggregate
     gitlab_project: ecp/skl/skl-application-aggregate
