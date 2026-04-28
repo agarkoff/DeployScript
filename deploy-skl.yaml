@@ -21,22 +21,6 @@ sequential:
     gitlab_project: ecp/skl/skl-api
     is_library: true
 
-  - name: skl-application-aggregate
-    directory: skl-application-aggregate
-    gitlab_project: ecp/skl/skl-application-aggregate
-
-  - name: skl-contract-aggregate
-    directory: skl-contract-aggregate
-    gitlab_project: ecp/skl/skl-contract-aggregate
-
-  - name: skl-decision-aggregate
-    directory: skl-decision-aggregate
-    gitlab_project: ecp/skl/skl-decision-aggregate
-
-  - name: skl-statement-aggregate
-    directory: skl-statement-aggregate
-    gitlab_project: ecp/skl/skl-statement-aggregate
-
   - name: skl-common
     directory: skl-common
     gitlab_project: ecp/skl/skl-common
