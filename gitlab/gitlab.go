@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -549,7 +550,38 @@ func createPipeline(service Service, gitlabURI, gitlabToken, ref, helmNamespace 
 	}
 
 	fmt.Printf("  Created pipeline for %s: %s\n", service.Name, pipelineResp.WebURL)
+
+	// Cancel any test jobs immediately so they don't hold up the deploy stage
+	jobsURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs?per_page=100", gitlabURI, projectPath, pipelineResp.ID)
+	if jobsBody, jobsErr := gitlabGet(client, jobsURL, gitlabToken); jobsErr == nil {
+		var jobs []JobResponse
+		if json.Unmarshal(jobsBody, &jobs) == nil {
+			cancelTestJobs(client, gitlabURI, gitlabToken, projectPath, jobs, service.Name, helmNamespace)
+		}
+	}
+
 	return pipelineResp.ID, nil
+}
+
+// cancelTestJobs cancels any job whose name contains "test" (case-insensitive)
+// and has not finished yet. Test jobs are skipped during deployment so the
+// pipeline can proceed straight to the deploy stage.
+func cancelTestJobs(client *http.Client, gitlabURI, gitlabToken, projectPath string, jobs []JobResponse, serviceName, namespace string) {
+	for _, job := range jobs {
+		if !strings.Contains(strings.ToLower(job.Name), "test") {
+			continue
+		}
+		switch job.Status {
+		case "success", "failed", "canceled", "skipped":
+			continue
+		}
+		cancelURL := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%d/cancel", gitlabURI, projectPath, job.ID)
+		if err := gitlabPost(client, cancelURL, gitlabToken); err != nil {
+			fmt.Printf("  Warning: failed to cancel test job %q for %s (%s): %v\n", job.Name, serviceName, namespace, err)
+			continue
+		}
+		fmt.Printf("  Canceled test job %q for %s (%s)\n", job.Name, serviceName, namespace)
+	}
 }
 
 // gitlabGet performs a GET request to GitLab API
@@ -576,6 +608,27 @@ func gitlabGet(client *http.Client, apiURL, token string) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// gitlabPost performs a POST request to GitLab API with no body.
+func gitlabPost(client *http.Client, apiURL, token string) error {
+	req, err := http.NewRequest("POST", apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("PRIVATE-TOKEN", token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("GitLab API returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // pollResult represents the outcome of a single polling iteration
@@ -671,6 +724,9 @@ func pollPipeline(client *http.Client, gitlabURI, gitlabToken, projectPath strin
 	if err := json.Unmarshal(jobsBody, &jobs); err != nil {
 		return pollContinue, fmt.Errorf("failed to parse jobs for %s: %v", serviceName, err)
 	}
+
+	// Cancel any test jobs that may have appeared since the last poll
+	cancelTestJobs(client, gitlabURI, gitlabToken, projectPath, jobs, serviceName, namespace)
 
 	pipelineFailed := pipelineResp.Status == "failed" || pipelineResp.Status == "canceled"
 
